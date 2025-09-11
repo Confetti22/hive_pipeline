@@ -87,6 +87,7 @@ contrastive_mlp:
   contastive_exp_name: "AE${autoencoder.ae_exp_name}_CNTRSTrun1"
   mlp_filters: [32,24,12]
   last_encoder: False
+  sample_neighbour_sphere_dims: 2
 
   # trainer:
   save_every: 50 #save frequency
@@ -101,6 +102,7 @@ contrastive_mlp:
   pos_topk: False
   pos_weight_ratio: 2
   d_near: 2 # should be decided on input resolution  
+
 
   # solver:
   optimizer: "adam"

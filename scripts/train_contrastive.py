@@ -190,6 +190,7 @@ def train_one_epoch(
     writer.add_scalar("train/pos_cos", pos_cos_loss/ n_steps, epoch)
     writer.add_scalar("train/neg_cos", neg_cos_loss/ n_steps, epoch)
     writer.add_scalar("train/lr", optimizer.param_groups[0]["lr"], epoch)
+    print(f"[Epoch {epoch}] loss={run_loss / n_steps:.4f}, pos_cos={pos_cos_loss / n_steps:.4f}, neg_cos={neg_cos_loss / n_steps:.4f}")
 
 
 
@@ -230,7 +231,7 @@ def main():
     #for data cover both right and left hemisphere, only use the right hemisphere feats for contrastive training
     #if the zarr feats is fitable in memory, we can load all feats into RAM to speed up training
 
-    ds = Contrastive_dataset_3d_2d(feats_map,d_near=args.d_near,num_pairs=args.num_pairs,n_view=args.n_views,verbose=False,args=args,sample_neighbour_sphere_dims=2)
+    ds = Contrastive_dataset_3d_2d(feats_map,d_near=args.d_near,num_pairs=args.num_pairs,n_view=args.n_views,verbose=False,sample_neighbour_sphere_dims=args.sample_neighbour_sphere_dims)
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=True, drop_last=False, pin_memory=True)
 
     # ---------------- models ----------------------- #

@@ -52,7 +52,7 @@ class Trainer:
         self.loss = loss
         self.optimizer = optimizer
         self.fp16_scaler = torch.GradScaler('cuda') if args.fp16 else None
-        self.stopper =  EarlyStopping(mode='min', patience=20, min_delta=1e-1, verbose=True)
+        self.stopper =  EarlyStopping(mode='min', patience=20, min_delta=5e-2, verbose=True)
 
         # Write reconstructions under logs/<ae_exp_name>/...
         ae_exp_name = getattr(args, 'ae_exp_name', 'default')
