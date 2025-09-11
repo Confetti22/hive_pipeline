@@ -22,56 +22,124 @@ from typing import Tuple, Union
 # -----------------------------------------------------------------------------
 #                       I / O   a n d   v o l u m e   r e a d e r
 # -----------------------------------------------------------------------------
+ # -----------------------------------------------------------------------------
+#                       I / O   a n d   v o l u m e   r e a d e r
+# -----------------------------------------------------------------------------
+from pathlib import Path
+import re
+from typing import Tuple
+import numpy as np
+from tifffile import memmap as tiff_memmap
+
 class VolumeReader:
-    """Handle large 3-D volumes stored as `.ims` or multi-page `.tiff`.
+    """Handle large 3-D volumes from:
+       1) single `.ims`
+       2) single `.tif/.tiff` (2-D or multi-page 3-D)
+       3) directory of 2-D `.tif/.tiff` files → stacked along Z
 
-    The class exposes a unified API:
-
-    ```python
-    with VolumeReader(path) as vol:
-        patch = vol.read_block(offset=(z,y,x), size=(d,h,w))
-    ```
+    Unified API:
+        with VolumeReader(path, channel=0) as vol:
+            patch = vol.read_block(offset=(z,y,x), size=(d,h,w))
     """
 
     def __init__(self, path: str | Path, channel: int = 0):
         self.path = Path(path)
         self.channel = channel
-        self._handle = None  # Lazily opened
+        self._handle = None          # Ims_Image or memmapped ndarray for single file
+        self._is_dir = self.path.is_dir()
+        self._dir_files: list[Path] = []
+        self._shape: Tuple[int, int, int] | None = None
+
+    # ------------------------------ helpers
+    @staticmethod
+    def _natural_key(p: Path):
+        # Sort “slice_2.tif” before “slice_10.tif”
+        parts = re.split(r'(\d+)', p.name)
+        return [int(s) if s.isdigit() else s.lower() for s in parts]
 
     # ------------------------------------------------------------------ context
     def __enter__(self):
+        if self._is_dir:
+            # Collect 2-D TIFFs and sort naturally
+            self._dir_files = sorted(
+                [p for p in self.path.iterdir() if p.suffix.lower() in {'.tif', '.tiff'}],
+                key=self._natural_key
+            )
+            if not self._dir_files:
+                raise ValueError(f"No .tif/.tiff files found in directory: {self.path}")
+
+            # Probe H,W from the first file
+            first = tiff_memmap(self._dir_files[0])
+            if first.ndim != 2:
+                raise ValueError("Directory mode expects each TIFF to be 2-D (H,W).")
+            H, W = map(int, first.shape)
+            D = len(self._dir_files)
+            self._shape = (D, H, W)
+            return self
+
+        # File path: .ims or .tif/.tiff
         suffix = self.path.suffix.lower()
         if suffix == ".ims":
             from helper.image_reader import Ims_Image  # local import to avoid heavy deps
             self._handle = Ims_Image(str(self.path), channel=self.channel)
+            # `rois[0]` → (z,y,x,d,h,w); store full size (d,h,w)
+            self._shape = tuple(int(x) for x in self._handle.rois[0][3:])
         elif suffix in {".tif", ".tiff"}:
-            # Memory-map to spare RAM – works well for large volumes
-            self._handle = memmap(self.path)
+            arr = tiff_memmap(self.path)  # can be 2-D or 3-D (pages, H, W)
+            if arr.ndim == 2:
+                # Promote to (1,H,W)
+                self._handle = arr[np.newaxis, ...]
+            elif arr.ndim == 3:
+                self._handle = arr
+            else:
+                raise ValueError(f"Unsupported TIFF ndim={arr.ndim}, expected 2 or 3.")
+            self._shape = tuple(int(x) for x in self._handle.shape)  # (D,H,W)
         else:
             raise ValueError(f"Unsupported volume format: {self.path.suffix}")
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        # Close IMS handle if present
         if self._handle is not None and hasattr(self._handle, "close"):
             self._handle.close()
 
     # --------------------------------------------------------------------- meta
     @property
     def shape(self) -> Tuple[int, int, int]:
-        """Return full volume shape (D, H, W)."""
-        if hasattr(self._handle, "rois"): #if ims image
-            return tuple(int(x) for x in self._handle.rois[0][3:])
-        return self._handle.data.shape  # tifffile memmap
+        if self._shape is None:
+            raise RuntimeError("VolumeReader not opened. Use as a context manager.")
+        return self._shape
 
     # ------------------------------------------------------------- random block
     def read_block(self, *, offset: Tuple[int, int, int], size: Tuple[int, int, int]) -> np.ndarray:
-        """Read a 3-D sub-volume starting at *offset* with *size* (all z-first)."""
-        z, y, x = offset
-        d, h, w = size
-        if hasattr(self._handle, "from_roi"):
-            coords = np.array([z, y, x, d, h, w])  # IMS path
-            return self._handle.from_roi(coords=coords, level=0)  
-        return self._handle[z : z + d, y : y + h, x : x + w]  # tifffile path 
+        """Read a 3-D sub-volume starting at *offset* with *size* (z-first)."""
+        z0, y0, x0 = offset
+        dz, dh, dw = size
+
+        if self._is_dir:
+            D, H, W = self.shape
+            z1 = min(z0 + dz, D)
+            if z0 >= D:
+                # Entirely out of bounds on Z → return empty (caller pads later)
+                return np.zeros((0, min(dh, H - y0), min(dw, W - x0)), dtype=np.float32)
+
+            # Gather the needed 2-D slices and crop Y,X
+            slices = []
+            for zi in range(z0, z1):
+                arr2d = tiff_memmap(self._dir_files[zi])  # (H,W)
+                patch2d = arr2d[y0:y0 + dh, x0:x0 + dw]
+                slices.append(np.asarray(patch2d))
+            if not slices:
+                return np.zeros((0, dh, dw), dtype=np.float32)
+            return np.stack(slices, axis=0)  # (dz_eff, dh_eff, dw_eff)
+
+        # Single file: IMS or TIFF memmap
+        if hasattr(self._handle, "from_roi"):  # IMS path
+            coords = np.array([z0, y0, x0, dz, dh, dw], dtype=np.int64)
+            return self._handle.from_roi(coords=coords, level=0)
+
+        # TIFF path: ndarray with shape (D,H,W)
+        return np.asarray(self._handle[z0:z0 + dz, y0:y0 + dh, x0:x0 + dw])
 
 # -----------------------------------------------------------------------------
 #                  C o o r d i n a t e   m a p p i n g   h e l p e r
@@ -123,8 +191,8 @@ def extract_features_to_zarr(
     global_offset: Tuple[int,int,int]= (0,0,0),
     whole_volume_size =None,
     region_size: Tuple[int, int, int],
-    roi_size: Tuple[int, int, int],
-    roi_stride: Tuple[int, int, int],
+    roi_size: int,
+    roi_stride: int,
     batch_size: int = 256,
     device: str = "cuda",
     # NEW ↓
@@ -248,7 +316,7 @@ import os
 # Get the path to the parent directory of 'test', which is 'project'
 project_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_dir)
-from config.load_config import load_cfg
+
 from lib.arch.ae import build_encoder_model, load_encoder2encoder 
 
 
@@ -260,8 +328,11 @@ parser.add_argument('-view_zarr', action='store_true', help='Only summarise and 
 parser.add_argument('-n', type=int, default=8, help='Number of slices per axis to plot/save')
 args = parser.parse_args()
 
-cfg = load_cfg(args.cfg)
-vol_path = cfg.paths.input_image
+from pipeline import load_cfg 
+from lib.utils.yaml_utils import  to_attr
+# from config.load_config import load_cfg
+cfg = to_attr(load_cfg(args.cfg))
+vol_path = cfg._run.input_image
 # Save features under <output_root>/<run_id>/data/<zarr_name>
 save_zarr_path = str(Path(cfg.paths.output_root) / cfg.run_id / 'data' / cfg.paths.zarr_name)
 

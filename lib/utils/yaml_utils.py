@@ -1,5 +1,30 @@
 from pathlib import Path
 import shutil
+from collections.abc import Mapping
+
+class AttrDict(dict):
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(name)
+    def __setattr__(self, name, value):
+        self[name] = value
+    def __delattr__(self, name):
+        try:
+            del self[name]
+        except KeyError:
+            raise AttributeError(name)
+
+def to_attr(x):
+    if isinstance(x, Mapping):
+        return AttrDict({k: to_attr(v) for k, v in x.items()})
+    if isinstance(x, list):
+        return [to_attr(v) for v in x]
+    if isinstance(x, tuple):
+        return tuple(to_attr(v) for v in x)
+    return x
+
 
 def update_ae_weight_path_in_yaml(yaml_path: Path, new_path: str) -> None:
     """

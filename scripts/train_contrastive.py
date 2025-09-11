@@ -67,6 +67,7 @@ def parse_args() -> argparse.Namespace:
             args.__dict__.update(cm)
             args.__dict__.update(pl_cfg['_run'])
             args.ae_weight_path = pl_cfg['paths']['ae_weight_path']
+            args.input_image = pl_cfg['paths']['input_image']
 
     return args
 
@@ -222,13 +223,14 @@ def main():
     shutil.copy2(args.cfg, log_dir / "config.yaml")
 
     feats_map = zarr.open_array(str(args.zarr_path), mode="r")
+    #load the whole zarr into memory
     feats_map = feats_map[0]
     print(f"Loaded zarr → {feats_map.shape= }")
     #todo enbale user defined or auto computed feats_map loading range
     #for data cover both right and left hemisphere, only use the right hemisphere feats for contrastive training
     #if the zarr feats is fitable in memory, we can load all feats into RAM to speed up training
 
-    ds = Contrastive_dataset_3d_2d(feats_map,d_near=args.d_near,num_pairs=args.num_pairs,n_view=args.n_views,verbose=False)
+    ds = Contrastive_dataset_3d_2d(feats_map,d_near=args.d_near,num_pairs=args.num_pairs,n_view=args.n_views,verbose=False,args=args,sample_neighbour_sphere_dims=2)
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=True, drop_last=False, pin_memory=True)
 
     # ---------------- models ----------------------- #

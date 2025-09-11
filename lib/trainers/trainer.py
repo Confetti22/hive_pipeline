@@ -16,6 +16,7 @@ import torch
 from lib.utils.file import checkdir
 from lib.utils.tensorboard import get_writer, TBWriter
 from lib.utils.distributed import MetricLogger
+from lib.utils.early_stop import EarlyStopping
 from glob import glob
 import math
 import numpy as np
@@ -51,6 +52,7 @@ class Trainer:
         self.loss = loss
         self.optimizer = optimizer
         self.fp16_scaler = torch.GradScaler('cuda') if args.fp16 else None
+        self.stopper =  EarlyStopping(mode='min', patience=20, min_delta=1e-1, verbose=True)
 
         # Write reconstructions under logs/<ae_exp_name>/...
         ae_exp_name = getattr(args, 'ae_exp_name', 'default')
@@ -156,11 +158,12 @@ class Trainer:
                 self.lr_sched_writer(self.optimizer.param_groups[0]["lr"], it)
 
                 if save_recon_img_flag:
+                    #B*C*D*H*W or B*C*H*W
                     preds_np = preds_for_loss.detach().cpu().numpy()
-                    preds_np = np.squeeze(preds_np)
-
                     input_np = target_for_loss.detach().cpu().numpy()
-                    input_np = np.squeeze(input_np)
+                    preds_np = np.moveaxis(preds_np,1,-1) #C to last dim 
+                    input_np = np.moveaxis(input_np,1,-1)
+
 
                     valid_sample_idxes = [0,1,2]
                     for id in valid_sample_idxes:
@@ -172,7 +175,7 @@ class Trainer:
                         tif.imwrite(os.path.join(self.recon_img_dir,x_name) , x)
                         tif.imwrite(os.path.join(self.recon_img_dir,re_x_name) , re_x)
 
-                        three_dims = (len(preds_np.shape) == 4)
+                        three_dims = (len(preds_np.shape) == 5)
                         if three_dims:
                             x_x,x_y,x_z=get_three_slice(x)
                             re_x_x, re_x_y, re_x_z = get_three_slice(re_x)
@@ -183,9 +186,10 @@ class Trainer:
                             merged = np.concatenate((x,re_x),axis =0)
                         merged = (merged - merged.min()) / (merged.max() - merged.min())
 
-                        self.writer.add_image('x and re_x ',merged,it,dataformats='HW')
+                        self.writer.add_image('x and re_x ',merged,it,dataformats='HWC')
         metric_logger.synchronize_between_processes()
         print("Averaged stats:", metric_logger)
+        return loss.item()
     
     def valid(self,epoch):
         self.model.eval()
@@ -295,8 +299,12 @@ class Trainer:
 
 
             save_recon_img_flag = ( (epoch ) %self.args.save_every==0)
-            self.train_one_epoch(epoch, lr_schedule,save_recon_img_flag,MSE_loss=True)
+            loss_val = self.train_one_epoch(epoch, lr_schedule,save_recon_img_flag,MSE_loss=True)
             lr_schedule.step()
+
+            if self.stopper.step(loss_val,self.model):
+                print(f"[EarlyStopping] Patience exceeded. Stopping at epoch {epoch}.")
+                break
 
             # === eval and save model === #
             if self.args.main and (epoch )% self.args.save_every == 0:

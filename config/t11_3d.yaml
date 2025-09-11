@@ -2,13 +2,13 @@
 #______for cnn_encoder_______
 input_size: [64,64,64]
 dims : 3
-model_name: ae
-architecture: ae2
+model_name: ae_old
+architecture: ae
 block_type:      # block_type can be  'double' 'triple' or empty(will use one conv each layer)
 filters: [32,64,96]  # filters number can not be the same consecutively
 kernel_size: [5,5,3]
-in_planes: 1
-out_planes: 1 
+in_channel: 1
+out_chaneel: 1 
 pad_mode: 'reflect'
 act_mode: 'elu'
 norm_mode: 'none'

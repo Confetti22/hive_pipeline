@@ -108,6 +108,7 @@ def load_cfg(cfg_path: str) -> dict:
     paths = cfg['paths']
     cfg['_run'] = {
         'dims': cfg['dims'],
+        'input_image': Path(cfg['paths']['input_image']).expanduser().absolute(),
         'root': root,
         'run_id': run_id,
         'data_dir': root / 'data',

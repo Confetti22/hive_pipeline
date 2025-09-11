@@ -95,7 +95,7 @@ def parse_args():
     if args.cfg:
         # Prefer loading via pipeline.py to get derived paths and consistency
         try:
-            from pipeline import _load_cfg as pipeline_load_cfg
+            from pipeline import load_cfg as pipeline_load_cfg
             cfg = pipeline_load_cfg(args.cfg)
         except Exception:
             cfg = None
@@ -293,7 +293,7 @@ def train(gpu, args):
     get_dataset_fn = getattr(__import__("lib.datasets.{}".format(args.dataset_name), fromlist=["get_dataset"]), "get_dataset")
     #todo : verify the args.data_path_dir is correct
     print(f"Loading data from {args.data_path_dir} and {args.valid_data_path_dir}")
-    train_dataset = get_dataset_fn(args.data_path_dir)
+    train_dataset = get_dataset_fn(args.data_path_dir,args = args)
     train_sampler = DistributedSampler(train_dataset, shuffle=args.shuffle, num_replicas = args.world_size, rank = args.rank, seed = 31)
     train_loader = DataLoader(dataset=train_dataset, 
                             sampler = train_sampler,
@@ -302,7 +302,7 @@ def train(gpu, args):
                             pin_memory = True,
                             drop_last = False, 
                             )
-    valid_dataset  = get_dataset_fn(args.valid_data_path_dir)
+    valid_dataset  = get_dataset_fn(args.valid_data_path_dir,args = args)
     valid_sampler = DistributedSampler(valid_dataset, shuffle= args.shuffle, num_replicas = args.world_size, rank = args.rank, seed = 31)
     valid_loader = DataLoader(dataset=valid_dataset, 
                             sampler = valid_sampler,
@@ -325,7 +325,10 @@ def train(gpu, args):
     
     #print out model info
     print(model)
-    summary(model,(1,64,64,64))
+    if args.dims==2:
+        summary(model,(args.in_channel,64,64))
+    else:    
+        summary(model,(args.in_channel,64,64,64))
 
     # model = nn.SyncBatchNorm.convert_sync_batchnorm(model) #group_norm did not require to sync, group_norm is preferred when batch_size is small
     # model = nn.parallel.DistributedDataParallel(model, device_ids= [args.gpu],find_unused_parameters=True)

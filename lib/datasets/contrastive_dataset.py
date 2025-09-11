@@ -2,7 +2,7 @@ import random
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-
+from pathlib import Path
 
 from helper.image_reader import Ims_Image
 
@@ -16,7 +16,6 @@ def generate_sphereshell__shifts(R, r=0, dims=3):
         if r < norm <= R:
             shifts.append(shift)
     return np.array(shifts)
-
 
 
 
@@ -147,7 +146,9 @@ class Contrastive_dataset_3d_2d(Dataset):
         lz, ly, lx – inclusive lower bounds
         hz, hy, hx – exclusive  upper bounds
 
-    If any bound is None it is computed from d_near + margin.
+    for 4D feature map, there are two cases:
+        1. (path.input_image is a single file) if is from a continus 3D volume, sample positive pairs in a 3d sphere shell near the anchor point(self.loc_lst[idx])
+        2. ((path.input_image is a dir)        if is from a set of 2D slices, sample positive pairs in a 2d circle shell near the anchor point(self.loc_lst[idx])
     """
     def __init__(
         self,
@@ -164,12 +165,14 @@ class Contrastive_dataset_3d_2d(Dataset):
         hz: int | None = None,
         hy: int | None = None,
         hx: int | None = None,
+        sample_neighbour_sphere_dims: int | None = None,
     ):
         self.feats_map = feats_map
         self.dims = feats_map.ndim - 1  # 3-D (volumetric) or 2-D (single slice)
         self.verbose = verbose
         self.n_view = n_view
         d_near = int(d_near)
+        
 
         if self.dims == 3:
             D, H, W, C = feats_map.shape
@@ -209,7 +212,8 @@ class Contrastive_dataset_3d_2d(Dataset):
             raise ValueError("Feature map must be 4-D (D, H, W, C) or 3-D (H, W, C).")
 
         self.sample_num = num_pairs
-        self.all_near_shifts = generate_sphereshell__shifts(R=d_near, r=0, dims=self.dims)
+        sample_neighbour_sphere_dims = self.dims if sample_neighbour_sphere_dims ==None else sample_neighbour_sphere_dims
+        self.all_near_shifts = generate_sphereshell__shifts(R=d_near, r=0, dims=sample_neighbour_sphere_dims)
 
     # ------------------------------------------------------------------ required
     def __len__(self):

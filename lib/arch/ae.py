@@ -269,9 +269,6 @@ class DecoderND(nn.Module):
 
 
 
-    
-
-
 class BaseAutoEncoderND(nn.Module):
     def __init__(self, in_channel, out_channel, filters, kernel_size, dims,
                  pad_mode='reflect', act_mode='elu', norm_mode='none', block_type='single',downsample_strategy='max_pool',last_layer_act = 'none' ,return_bottle_neck=True):
@@ -346,7 +343,7 @@ class ConvMLP(nn.Module):
 
 class ComposedModel(nn.Module):
     def __init__(self, in_channel,cnn_filters, kernel_size,dims,mlp_filters, 
-                 pad_mode='reflect', act_mode='elu', norm_mode='gn', block_type='double',downsample_strategy='max_pool'):
+                 pad_mode='reflect', act_mode='elu', norm_mode='gn', block_type='double',downsample_strategy='conv_stride'):
         super().__init__()
         self.cnn_encoder = EncoderND(in_channel, cnn_filters, kernel_size, dims,
                                  pad_mode, act_mode, norm_mode, block_type,downsample_strategy=downsample_strategy)
@@ -358,10 +355,6 @@ class ComposedModel(nn.Module):
         # x = x.reshape(-1, x.shape[-1])
         x = self.mlp_encoder(x)
         return x
-
-
-"ae: BaseAutoEncoderND (use args.dims to select 2D/3D)"
-"ae_1: BaseAutoEncoderND_1 (uses downsample_strategy, etc.)"
 
 MODEL_MAP = {
     'ae': BaseAutoEncoderND,

@@ -1,6 +1,6 @@
 
 import torch.nn as nn
-from .ae import AutoEncoder3D_1,ConvMLP 
+from .ae import ConvMLP 
 
 class SegmentationHead(nn.Module):
     def __init__(self, in_features, num_classes):

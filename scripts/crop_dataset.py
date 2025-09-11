@@ -193,6 +193,7 @@ def main():
         return
 
     # -------------------- TIFF (file or directory) --------------------
+       # -------------------- TIFF (file or directory) --------------------
     if img_path.is_dir():
         tiffs = sorted([p for p in img_path.iterdir() if p.suffix.lower() in (".tif", ".tiff")])
         if not tiffs:
@@ -211,9 +212,10 @@ def main():
             if arr.ndim != probe.ndim or arr.shape != probe.shape:
                 raise SystemExit(f"[ERR] Shape mismatch: {p.name} has {arr.shape}, expected {probe.shape}")
 
+        # cfg → sizes / ranges
         roi_size = parse_roi_size(roi_cfg, spatial_dims)
-        split_axis = clamp_axis(split_axis_cfg, spatial_dims)
 
+        # sampling range (applies equally to train and test; no spatial split now)
         if sample_range_cfg is None:
             sample_range = default_sample_range(shape)
         else:
@@ -221,29 +223,53 @@ def main():
                 raise SystemExit(f"[ERR] sample_range dims != {spatial_dims}")
             sample_range = [list(map(int, r)) for r in sample_range_cfg]
 
-        train_sr, test_sr = split_ranges(sample_range, split_axis, train_ratio)
+        # ---- NEW: file-index-based split ----
+        N = len(tiffs)
+        n_train_files = int(math.floor(N * train_ratio))
+        train_files = tiffs[:n_train_files]
+        test_files  = tiffs[n_train_files:]
 
-        # distribute counts per file
-        tr_counts = distribute_counts(train_n, len(tiffs))
-        te_counts = distribute_counts(test_n,  len(tiffs))
+        print(f"[split-files] train_files={len(train_files)} (0..{n_train_files-1}), "
+              f"test_files={len(test_files)} ({n_train_files}..{N-1})")
+
+        # distribute counts across the chosen files
+        tr_counts = distribute_counts(train_n, max(1, len(train_files)))
+        te_counts = distribute_counts(test_n,  max(1, len(test_files)))
+
+        # helpers to sample an ROI from a given array using the common sample_range
+        if spatial_dims == 2:
+            def make_get(arr):
+                return lambda: sample_roi_2d(arr, sample_range, roi_size, filt)
+        else:
+            def make_get(arr):
+                return lambda: sample_roi_3d(arr, sample_range, roi_size, filt)
 
         total_tr = total_te = 0
-        for idx, fp in enumerate(tiffs):
+
+        # write train set from the first block of files
+        for idx, fp in enumerate(train_files):
             arr = tif.imread(str(fp))
+            get_roi = make_get(arr)
             stem = fp.stem
+            total_tr += write_set(get_roi,
+                                  tr_counts[idx],
+                                  train_dir,
+                                  lambda i, s=stem: f"{s}_tr_{i:04d}.tif",
+                                  progress_every=100)
 
-            if spatial_dims == 2:
-                get_tr = lambda arr=arr: sample_roi_2d(arr, train_sr, roi_size, filt)
-                get_te = lambda arr=arr: sample_roi_2d(arr, test_sr,  roi_size, filt)
-            else:
-                get_tr = lambda arr=arr: sample_roi_3d(arr, train_sr, roi_size, filt)
-                get_te = lambda arr=arr: sample_roi_3d(arr, test_sr,  roi_size, filt)
+        # write test set from the remaining block of files
+        for idx, fp in enumerate(test_files):
+            arr = tif.imread(str(fp))
+            get_roi = make_get(arr)
+            stem = fp.stem
+            total_te += write_set(get_roi,
+                                  te_counts[idx],
+                                  test_dir,
+                                  lambda i, s=stem: f"{s}_te_{i:04d}.tif",
+                                  progress_every=100)
 
-            total_tr += write_set(get_tr, tr_counts[idx], train_dir, lambda i, s=stem: f"{s}_tr_{i:04d}.tif")
-            total_te += write_set(get_te, te_counts[idx],  test_dir,  lambda i, s=stem: f"{s}_te_{i:04d}.tif", progress_every=100)
-
-        print(f"[OK] crop done (TIFF dir) → train:{total_tr}  test:{total_te}")
-        return
+        print(f"[OK] crop done (TIFF dir, file-index split) → train:{total_tr}  test:{total_te}")
+        return 
 
     # Single TIFF
     vol = tif.imread(str(img_path))
