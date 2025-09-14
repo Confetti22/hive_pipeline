@@ -24,7 +24,7 @@ def shannon_entropy(img):
     return float(-(p * np.log2(p + 1e-12)).sum())
 
 
-def entropy_filter(l_thres=1.4, h_thres=100.0,v=True):
+def entropy_filter(l_thres=1.4, h_thres=100.0,v=False):
     def _f(img):
         ent = shannon_entropy(img)
         if v and ent>= l_thres:

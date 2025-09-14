@@ -268,7 +268,7 @@ def main():
 
         train_one_epoch(model, loader, optimizer, device, epoch, writer,
                         n_views=args.n_views, pos_weight_ratio=args.pos_weight_ratio,
-                        only_pos=True)
+                        only_pos=False)
         scheduler.step()
 
         # reshuffle dataset

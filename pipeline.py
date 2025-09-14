@@ -191,7 +191,7 @@ def run_slurm(cmd: list, cfg: dict, dry: bool):
     run_id = cfg['run_id']
     job_name = f"{run_id}-{Path(cmd[1]).stem}"
     script = textwrap.dedent(f"""
-    #!/bin/bash
+    #!/bin/sh
     #SBATCH --job-name={job_name}
     #SBATCH --partition={sb.get('partition','compute')}
     #SBATCH --nodes=1

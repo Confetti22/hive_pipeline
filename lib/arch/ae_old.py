@@ -1,6 +1,5 @@
 import torch.nn as nn
 import torch
-import os
 
 
 
@@ -130,30 +129,16 @@ def make_block(in_ch, out_ch, ks, stride, block_type, dim, trans, shared_kwargs,
 # --------------------------------------------
 #  Base AutoEncoder Class (ND)
 # --------------------------------------------
-
 class EncoderND(nn.Module):
-    """
-    update 2025/08/14
-    Encoder with N down_layers. Downsampling per stage is controlled by `downsample_strategy`:
-      - 'conv_stride': first conv in the block has stride=2 (no padding).
-      - 'max_pool':    all convs use stride=1 (no padding), then MaxPool(k=2,s=2).
-
-    Everything (including the former conv_in and optional last 1×1 conv) is a down_layer.
-    """
     def __init__(self, in_channel, filters, kernel_size, dims=3,
-                 pad_mode='reflect', act_mode='elu', norm_mode='gn',
-                 block_type='double',
-                 downsample_strategy='conv_stride'):  # 'conv_stride' or 'max_pool'
+                 pad_mode='reflect', act_mode='elu', norm_mode='gn', block_type='double',avg_pool_size = None, avg_pool_padding=False,last_encoder=True):
         super().__init__()
-        assert downsample_strategy in ('conv_stride', 'max_pool'), \
-            "downsample_strategy must be 'conv_stride' or 'max_pool'"
-
-        self.dim =dims 
+        self.dim = dims
         self.depth = len(filters)
-        self.downsample_strategy = downsample_strategy
+        self.avg_pool_size = avg_pool_size
+        self.avg_pool_padding = avg_pool_padding
 
-        Pool = nn.MaxPool3d if dims== 3 else nn.MaxPool2d
-        Conv = nn.Conv3d if dims== 3 else nn.Conv2d
+        Conv = nn.Conv3d if dims == 3 else nn.Conv2d
 
         self.shared_kwargs = {
             'pad_mode': pad_mode,
@@ -161,62 +146,46 @@ class EncoderND(nn.Module):
             'norm_mode': norm_mode
         }
 
+        k = kernel_size[0]
+        p = int((k - 1) // 2)
+        self.conv_in = conv_nd_norm_act(in_channel, filters[0], k, 2, p, dim=dims, **self.shared_kwargs)
+
         self.down_layers = nn.ModuleList()
-
-        # ---- Stage 0: former conv_in, now a down_layer (single block, no padding) ----
-        k0 = kernel_size[0]
-
-        if self.downsample_strategy == 'conv_stride':
-            stage0 = make_block(in_channel, filters[0], k0, stride=2,
-                                block_type=block_type, dim=dims, trans=False,
-                                shared_kwargs=self.shared_kwargs)
-        else:
-            stage0_block = make_block(in_channel, filters[0], k0, stride=1,
-                                      block_type=block_type, dim=dims, trans=False,
-                                      shared_kwargs=self.shared_kwargs)
-            stage0 = nn.Sequential(stage0_block, Pool(kernel_size=2, stride=2))
-
-        self.down_layers.append(stage0)
-
-        # ---- Stages 1..depth-1 ----
         for i in range(self.depth - 1):
             ks = kernel_size[min(i + 1, len(kernel_size) - 1)]
+            p = int((ks - 1) // 2)
+            block = make_block(filters[i], filters[i + 1], ks=ks, stride=2, padding=p, block_type=block_type, dim=dims, trans=False,
+                               shared_kwargs=self.shared_kwargs)
+            self.down_layers.append(block)
 
-            if self.downsample_strategy == 'conv_stride':
-                block = make_block(filters[i], filters[i + 1], ks, stride=2,
-                                   block_type=block_type, dim=dims, trans=False,
-                                   shared_kwargs=self.shared_kwargs)
-                stage = block
-            else:
-                block = make_block(filters[i], filters[i + 1], ks, stride=1,
-                                   block_type=block_type, dim=dims, trans=False,
-                                   shared_kwargs=self.shared_kwargs)
-                if i == self.depth - 1 -1:
-                    stage = block
-                else:
-                    stage = nn.Sequential(block, Pool(kernel_size=2, stride=2))
-
-            self.down_layers.append(stage)
-
+        if last_encoder:
+            self.last_encoder_conv = Conv(filters[-1], filters[-1], kernel_size=1)
+        else:
+            self.last_encoder_conv = None
 
     def forward(self, x):
+        x = self.conv_in(x)
         for layer in self.down_layers:
             x = layer(x)
+        if self.last_encoder_conv:
+            x = self.last_encoder_conv(x)
+
+        avg_pool_size = self.avg_pool_size
+        apply_avg_flag = self.avg_pool_size if (self.avg_pool_size is None) else avg_pool_size[0]
+        if apply_avg_flag:
+            
+            if self.avg_pool_padding:
+                pad = [int((x - 1)//2) for x in avg_pool_size]
+            else:
+                pad =0
+            pool = nn.AvgPool3d(kernel_size=avg_pool_size, stride=1,padding=pad) if self.dim == 3 else nn.AvgPool2d(kernel_size=avg_pool_size, stride=1,padding=pad)
+            x = pool(x)
         return x
 
 
 class DecoderND(nn.Module):
-    """
-    Decoder with upsampling via ConvTranspose (stride=2), no padding anywhere.
-    All stages (including the final out stage) are appended to self.up_layers.
-    
-    update 2025/09/03 add parameter:last_layer_act='none',  controls whether to use activation at the last layer 
-    (for raw input image reconstruciton task, a linear layer is better)
-
-    """
     def __init__(self, out_channel, filters, kernel_size, dims=3,
-                 pad_mode='reflect', act_mode='elu', norm_mode='gn',
-                 block_type='double',output_padding =0,last_layer_act='none'):
+                 pad_mode='reflect', act_mode='elu', norm_mode='gn', block_type='double'):
         super().__init__()
         self.dim = dims
         self.depth = len(filters)
@@ -230,60 +199,53 @@ class DecoderND(nn.Module):
         }
 
         self.up_layers = nn.ModuleList()
-
-        # Stages: depth-1 .. 1 (each: TConv stride=2 (no padding) + optional convs stride=1)
         for i in reversed(range(self.depth - 1)):
-            ks = kernel_size[min(i + 1, len(kernel_size) - 1)]
-            block = make_block(
-                filters[i + 1], filters[i],
-                ks,                    # kernel size
-                stride=2,        # upsample here
-                block_type=block_type,
-                dim=dims,
-                trans=True,            # first conv is transposed conv
-                output_padding=output_padding,
-                shared_kwargs=self.shared_kwargs
-            )
+            ks = kernel_size[i + 1]
+            p = int((ks - 1) // 2)
+            block = make_block(filters[i + 1], filters[i], ks, stride=2, padding=p,
+                               block_type=block_type, dim=dims, trans=True,
+                               shared_kwargs=self.shared_kwargs)
             self.up_layers.append(block)
 
-        # Final out stage as an up_layer (ConvTranspose to out_channel, no padding)
-        block = make_block(
-                filters[0], out_channel,
-                kernel_size[0],                    # kernel size
-                stride=2,        # upsample here
-                block_type=block_type,
-                dim=dims,
-                trans=True,            # first conv is transposed conv
-                output_padding=1,
-                shared_kwargs = {
-                    'pad_mode': pad_mode,
-                    'act_mode': last_layer_act,
-                    'norm_mode': norm_mode}
+        k = kernel_size[0]
+        p = int((k - 1) // 2)
+        self.conv_out = nn.Sequential(
+            ConvTrans(filters[0], out_channel, kernel_size=k, stride=2, padding=p, output_padding=1),
+            nn.ReLU()
+        )
 
-            )
-        self.up_layers.append(block)
     def forward(self, x):
         for layer in self.up_layers:
             x = layer(x)
+        x = self.conv_out(x)
         return x
+    
 
 class BaseAutoEncoderND(nn.Module):
-    def __init__(self, in_channel, out_channel, filters, kernel_size, dims,
-                 pad_mode='reflect', act_mode='elu', norm_mode='none', block_type='single',downsample_strategy='max_pool',last_layer_act = 'none' ,return_bottle_neck=True):
+    def __init__(self, in_channel, out_channel, filters, kernel_size, dims=3,
+                 pad_mode='reflect', act_mode='elu', norm_mode='gn', block_type='double'):
         super().__init__()
         self.encoder = EncoderND(in_channel, filters, kernel_size, dims,
-                                 pad_mode, act_mode, norm_mode, block_type,downsample_strategy)
+                                 pad_mode, act_mode, norm_mode, block_type)
         self.decoder = DecoderND(out_channel, filters, kernel_size, dims,
-                                 pad_mode, act_mode, norm_mode, block_type,last_layer_act=last_layer_act)
-        self.return_bottle_neck = return_bottle_neck
+                                 pad_mode, act_mode, norm_mode, block_type)
 
     def forward(self, x):
-        bottle_neck = self.encoder(x)
-        cnn_out = self.decoder(bottle_neck)
-        if self.return_bottle_neck:
-            return bottle_neck,cnn_out
-        else:
-            return cnn_out
+        x = self.encoder(x)
+        x = self.decoder(x)
+        return x
+
+
+
+class AutoEncoder3D(BaseAutoEncoderND):
+    def __init__(self, **kwargs):
+        super().__init__(dims=3, **kwargs)
+
+class AutoEncoder2D(BaseAutoEncoderND):
+    def __init__(self, **kwargs):
+        super().__init__(dims=2, **kwargs)
+
+
 
 # --------------------------------------------
 # MLP 
@@ -341,10 +303,10 @@ class ConvMLP(nn.Module):
 
 class ComposedModel(nn.Module):
     def __init__(self, in_channel,cnn_filters, kernel_size,dims,mlp_filters, 
-                 pad_mode='reflect', act_mode='elu', norm_mode='gn', block_type='double',downsample_strategy='conv_stride'):
+                 pad_mode='reflect', act_mode='elu', norm_mode='gn', block_type='double',avg_pool_size= None, avg_pool_padding=None,last_encoder=True):
         super().__init__()
         self.cnn_encoder = EncoderND(in_channel, cnn_filters, kernel_size, dims,
-                                 pad_mode, act_mode, norm_mode, block_type,downsample_strategy=downsample_strategy)
+                                 pad_mode, act_mode, norm_mode, block_type,avg_pool_size=avg_pool_size,avg_pool_padding =avg_pool_padding,last_encoder=last_encoder)
         self.mlp_encoder = ConvMLP(mlp_filters,dims)
 
     def forward(self, x):
@@ -354,18 +316,22 @@ class ComposedModel(nn.Module):
         x = self.mlp_encoder(x)
         return x
 
+
+"ae2, ae3, with more complex layer naming, "
+"ae2_1, ae3_1, layers' name are concise only with donw/up"
+
 MODEL_MAP = {
-    'ae': BaseAutoEncoderND,
-    'encoder': EncoderND,
+    'ae2': AutoEncoder2D,
+    'ae3': AutoEncoder3D,
+    'encoder':EncoderND,
 }
 
 
 def build_autoencoder_model(args):
     """Build an autoencoder with variant-specific kwargs.
 
-    'ae' uses the classic BaseAutoEncoderND; 'ae_1' uses
-    BaseAutoEncoderND_1 and may take `downsample_strategy`, `last_layer_act`,
-    and `return_bottle_neck`.
+    ae2/ae3 use the classic BaseAutoEncoderND; ae2_1/ae3_1 use
+    BaseAutoEncoderND_1 and require `downsample_strategy`.
     """
 
     model_arch = args.model_name
@@ -380,10 +346,6 @@ def build_autoencoder_model(args):
         'act_mode': args.act_mode,
         'norm_mode': args.norm_mode,
         'block_type': args.block_type,
-        'downsample_strategy':args.downsample_strategy,
-        'last_layer_act': args.last_layer_act,
-        'return_bottle_neck': args.return_bottle_neck,
-        'dims': args.dims,
     }
 
     model = MODEL_MAP[model_arch](**kwargs)
@@ -392,27 +354,27 @@ def build_autoencoder_model(args):
     return model
 
 
-def build_encoder_model(args, dims):
-    """Build only the encoder module using the same parameters as build_autoencoder_model.
-    This function instantiates the autoencoder specified by `args.model_name` with
-    the same kwargs as `build_autoencoder_model`, then returns only its `encoder`.
-    Notes:
-    - The `dims` parameter is kept for backward compatibility but is unused,
-      since `args.dims` is already consumed by the autoencoder builder.
-    - If you previously depended on constructing the standalone encoder via
-      `args.encoder_model_name`, that path is now superseded by taking the
-      encoder from the autoencoder to guarantee exact parity.
-    """
-    # Reuse the autoencoder factory to ensure exact parity of kwargs/architecture
-    args.dims = dims  
-    ae = build_autoencoder_model(args)
-    encoder = ae.encoder
-    print('model: ', encoder.__class__.__name__)
-    return encoder
+def build_encoder_model(args,dims):
+
+    kwargs = {
+        'in_channel': args.in_channel,
+        'filters': args.filters,
+        'kernel_size': args.kernel_size,
+        'pad_mode': args.pad_mode,
+        'act_mode': args.act_mode,
+        'norm_mode': args.norm_mode,
+        'block_type': args.block_type,
+        'avg_pool_size':args.avg_pool_size,
+        'last_encoder': args.last_encoder,
+    }
+
+    model = MODEL_MAP[args.encoder_model_name](**kwargs)
+    print('model: ', model.__class__.__name__)
+
+    return model
 
 
-
-def build_cmpsd_model(args):
+def build_final_model(args):
     kwargs = {
         'in_channel': args.in_channel,
         'cnn_filters': args.filters,
@@ -423,54 +385,14 @@ def build_cmpsd_model(args):
         'block_type': args.block_type,
         'dims':args.dims,
         'mlp_filters':args.mlp_filters,
-        'downsample_strategy':args.downsample_strategy,
-
+        'avg_pool_size':args.avg_pool_size,
+        'avg_pool_padding':args.avg_pool_padding,
+        'last_encoder': args.last_encoder,
     }
     model = ComposedModel(**kwargs)
     return model
 
 
-class semantic_seg(nn.Module):
-    def __init__(self, in_channel,out_channel,filters, kernel_size,dims,mlp_filters, 
-                pad_mode='reflect', act_mode='elu', norm_mode='gn', block_type='double',downsample_strategy='max_pool'):
-        super().__init__()
-        kwargs ={
-            'in_channel': in_channel, 
-            'out_channel': out_channel,
-            'filters':filters, 
-            'kernel_size': kernel_size, 
-            'dims':dims,                 
-            'pad_mode':pad_mode, 
-            'act_mode':act_mode,
-            'norm_mode':norm_mode, 
-            'block_type':block_type,
-            'downsample_strategy': downsample_strategy,
-        }
-        self.cnn_module = BaseAutoEncoderND(**kwargs)
-        self.mlp_module = ConvMLP(mlp_filters,dims,l2_norm=False)
-
-    def forward(self, x):
-        bottle_neck,cnn_out = self.cnn_module(x) # B*C*H*W --> B*H*W*C --> (B*H*W)*C
-        mlp_out = self.mlp_module(cnn_out)
-        return bottle_neck,mlp_out
-
-def build_semantic_seg_model(args):
-    kwargs = {
-        'in_channel': args.in_channel,
-        'out_channel': args.out_channel,
-        'filters': args.filters,
-        'kernel_size': args.kernel_size,
-        'pad_mode': args.pad_mode,
-        'act_mode': args.act_mode,
-        'norm_mode': args.norm_mode,
-        'block_type': args.block_type,
-        'dims':args.dims,
-        'mlp_filters':args.mlp_filters,
-        'downsample_strategy': args.downsample_strategy,
-    }
-    model = semantic_seg(**kwargs)
-    return model
-    
 
 
 def modify_key(weight_dict,source,target):
@@ -484,6 +406,26 @@ def modify_key(weight_dict,source,target):
 def delete_key(weight_dict,pattern_lst:tuple):
     new_weight_dict = {k: v for k, v in weight_dict.items() if not k.startswith(pattern_lst)}
     return new_weight_dict 
+
+def load_encoder2encoder(model,ckpt_pth):
+    ckpt = torch.load(ckpt_pth)
+    removed_module_dict = modify_key(ckpt,source='module.',target='')
+    load_result = model.load_state_dict(removed_module_dict, strict=False)
+
+    missing = load_result.missing_keys
+    unexpected = load_result.unexpected_keys
+
+    if not missing and not unexpected:
+        print("load_encoder2encoder:✅ All weights loaded successfully.")
+    else:
+        print("load_encoder2encoder:⚠️ Some weights were not loaded exactly:")
+        if missing:
+            print(f"   • Missing keys ({len(missing)}):\n     {missing}")
+        if unexpected:
+            print(f"   • Unexpected keys ({len(unexpected)}):\n     {unexpected}")
+
+
+    return load_result
 
 def load_ae2encoder(model,ckpt_pth):
     ckpt = torch.load(ckpt_pth)
@@ -504,89 +446,26 @@ def load_ae2encoder(model,ckpt_pth):
 
     return load_result
 
-def modify_key(weight_dict, source, target):
-    return {k.replace(source, target): v for k, v in weight_dict.items()}
-def delete_key(weight_dict, pattern_lst: tuple):
-    return {k: v for k, v in weight_dict.items() if not k.startswith(pattern_lst)}
 
+def load_mlpencoder_dict(model,ckpt_pth):
+    ckpt = torch.load(ckpt_pth)
+    #remove any 'module.' keywords if exist in weights_pth and remove unwanted layers
+    load_result = model.load_state_dict(ckpt,strict=False)
 
-def _extract_state_dict(ckpt_or_path):
-    """Return a raw state_dict from a checkpoint file or mapping.
-    Supports:
-    - Path to AE trainer checkpoint with keys {'epoch','model','optim'/'optimizer'}
-    - Direct state_dict (possibly from DataParallel/DistributedDataParallel)
-    """
-    if isinstance(ckpt_or_path, (str, bytes, os.PathLike)):
-        ckpt = torch.load(ckpt_or_path, map_location='cpu')
-    else:
-        ckpt = ckpt_or_path
-    if isinstance(ckpt, dict) and 'model' in ckpt and isinstance(ckpt['model'], dict):
-        return ckpt['model']
-    return ckpt
+    # 4. Inspect missing / unexpected keys
+    missing = load_result.missing_keys
+    unexpected = load_result.unexpected_keys
 
-
-def _state_dict_for_encoder(raw_sd: dict) -> dict:
-    """Filter and normalize keys so they fit an encoder module.
-    Handles keys like:
-      - 'module.encoder.xxx' (DDP AE) → 'xxx'
-      - 'encoder.xxx'        (AE)     → 'xxx'
-      - 'module.xxx'         (DDP encoder-only) → 'xxx'
-      - 'decoder.xxx' keys are dropped entirely
-      - bare 'xxx' are kept (encoder-only saved w/o wrappers)
-    """
-    out = {}
-    for k, v in raw_sd.items():
-        if k.startswith('module.encoder.'):
-            out[k[len('module.encoder.'):]] = v
-        elif k.startswith('encoder.'):
-            out[k[len('encoder.'):]] = v
-        elif k.startswith('module.decoder.') or k.startswith('decoder.'):
-            # skip decoder weights when loading into encoder
-            continue
-        elif k.startswith('module.'):
-            # encoder-only saved under DataParallel
-            out[k[len('module.'):]] = v
-        else:
-            # bare keys, assume encoder-only dict
-            out[k] = v
-    return out
-
-def _report_load_result(tag: str, result: torch.nn.modules.module._IncompatibleKeys):
-    missing = result.missing_keys
-    unexpected = result.unexpected_keys
     if not missing and not unexpected:
-        print(f"{tag}: ✅ All weights loaded successfully.")
+        print("load_mlpencoder_dict ✅ All weights loaded successfully.")
     else:
-        print(f"{tag}: ⚠️ Some weights were not loaded exactly:")
+        print("load_mlpencoder_dict ⚠️ Some weights were not loaded exactly:")
         if missing:
             print(f"   • Missing keys ({len(missing)}):\n     {missing}")
         if unexpected:
             print(f"   • Unexpected keys ({len(unexpected)}):\n     {unexpected}")
 
-def load_encoder2encoder(model, ckpt):
-    """Load an encoder module from an encoder-only or AE checkpoint.
-    Accepts either a path or a raw mapping. Keys are normalized to fit the
-    provided encoder module. If an AE checkpoint is passed, only the encoder
-    subset is used.
-    """
-    raw_sd = _extract_state_dict(ckpt)
-    norm_sd = _state_dict_for_encoder(raw_sd)
-    result = model.load_state_dict(norm_sd, strict=False)
-    _report_load_result('load_encoder2encoder', result)
-    return result
-
-def load_ae2encoder(model, ckpt):
-    """Alias of load_encoder2encoder for clarity in call sites."""
-    return load_encoder2encoder(model, ckpt)
-
-
-def load_mlpencoder_dict(model,ckpt_pth):
-    ckpt = torch.load(ckpt_pth)
-    #remove any 'module.' keywords if exist in weights_pth and remove unwanted layers
-    result = model.load_state_dict(ckpt,strict=False)
-    _report_load_result('load_encoder2encoder', result)    
-
-    return result
+    return load_result
 
 
 def load_mlp_ckpt_to_convmlp(convmlp_model, mlp_ckpt_pth=None, mlp_weight_dict=None, dims=2):
@@ -626,6 +505,7 @@ def load_compose_encoder_dict(cmodel,cnn_ckpt_pth,mlp_ckpt_pth=None,mlp_weight_d
     # load_mlpencoder_dict(mlp,mlp_ckpt_pth)
     load_mlp_ckpt_to_convmlp(mlp,mlp_ckpt_pth,mlp_weight_dict,dims)
     
+
 
 
 

@@ -12,133 +12,163 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from lib.arch.seg import SegmentationHead,ConvSegHead
+from __future__ import annotations
+
+import time
+from typing import Callable, Iterable, List, Sequence, Tuple, Union, Optional
+
+import numpy as np
+import zarr
+import napari
+from magicgui import widgets
+
+# ------------------------------- Constants -------------------------------
+
+METHOD_COMPUTE_SIM = "computing_sim"
+METHOD_MLP_HEAD    = "mlp_head"
+METHOD_CONV_HEAD   = "conv_head"
+
+DEFAULT_STRIDE     = 16
+DEFAULT_ROI_SIZE   = (64, 64, 64)
+DEFAULT_Z_INFLATE  = 18  # replicate ±18 z-slices
+# Alignment base; pick something safely away from dataset min to avoid edge effects
+DEFAULT_LB         = (3392 + int(1.5 * DEFAULT_STRIDE),
+                      2512 + int(1.5 * DEFAULT_STRIDE),
+                      3504 + int(1.5 * DEFAULT_STRIDE))
 
 
 
-def get_target_feats_map(target_shape,roi_offset,lb,stride ):
+# ------------------------------------------------------------------------
+# Utilities
+# ------------------------------------------------------------------------
 
-    vol_start_idx = [ stride - (offset - lb)%stride for  offset,lb in zip(roi_offset,lb )]
-    feats_offset = [ int( (start + offset - lb)//stride) for start, offset, lb in zip(vol_start_idx,roi_offset,lb )]
+def _as_callable_or_value(obj):
+    """Return obj() if callable, else obj (lets us accept properties or methods)."""
+    return obj() if callable(obj) else obj
 
-    feats_map = zarr.open_array('/home/confetti/data/t1779/mlp_feats.zarr',mode='a')
-    print(f"feats_map.shape{feats_map.shape}")
-    C,D,H,W = feats_map.shape
-    # Desired region
-    (lz, ly, lx) = feats_offset
-    (hz, hy, hx) = [l + s for l, s in zip(feats_offset, target_shape)]
-
-    # Clip to valid bounds
-    max_z, max_y, max_x = D,H,W # assuming feats_map has shape (C, Z, Y, X)
-    clipped_lz = max(0, lz)
-    clipped_ly = max(0, ly)
-    clipped_lx = max(0, lx)
-    clipped_hz = min(max_z, hz)
-    clipped_hy = min(max_y, hy)
-    clipped_hx = min(max_x, hx)
-
-    # Compute slices for existing data
-    index = (
-        slice(None),
-        slice(clipped_lz, clipped_hz),
-        slice(clipped_ly, clipped_hy),
-        slice(clipped_lx, clipped_hx)
-    )
-
-    existing_data = feats_map[index]
-    target_feats = np.zeros((C, *target_shape), dtype=feats_map.dtype)
-    z_start = clipped_lz - lz
-    y_start = clipped_ly - ly
-    x_start = clipped_lx - lx
-    z_end = z_start + (clipped_hz - clipped_lz)
-    y_end = y_start + (clipped_hy - clipped_ly)
-    x_end = x_start + (clipped_hx - clipped_lx)
-    target_feats[:, z_start:z_end, y_start:y_end, x_start:x_end] = existing_data
-
-    target_feats_map = np.moveaxis(target_feats,0,-1) # D,H,W,C
-    print(f"target_feats.shape {target_feats_map.shape}")
-    return target_feats_map
-
-
-
-
-
-def map2sample_space(mapped_seg_out,sample_shape,vol_start_idx,stride):
-    # feats_lst = np.moveaxis(feats_slice,0,-1).reshape(-1,C) 
-    mapped_seg_out = np.squeeze(mapped_seg_out)
-    zoomed_seg_out = np.kron(mapped_seg_out,np.ones((stride,stride,stride),dtype=int))
-
-    lzp = vol_start_idx[0] 
-    ret =( sample_shape[0] -  vol_start_idx[0] ) % stride 
-    hzp = ret if  ret else stride
-
-    lyp = vol_start_idx[1] 
-    ret =( sample_shape[1] -  vol_start_idx[1] ) % stride 
-    hyp = ret if  ret else stride
-
-    lxp = vol_start_idx[2] 
-    ret =( sample_shape[2] -  vol_start_idx[2] ) % stride 
-    hxp = ret if  ret else stride
-
-    seg_out =np.pad(zoomed_seg_out,pad_width=((lzp,hzp),(lyp,hyp),(lxp,hxp)),constant_values=0).astype(int)
-
-    return seg_out 
-
-
-def _compute_seg1(label_mask: np.ndarray, feature_map: np.ndarray, dist_matrix=None, spatail_decay=True,) -> np.ndarray:
+def upsample_labels_by_stride(
+    coarse: np.ndarray, stride: int, pad_left: Sequence[int], pad_right: Sequence[int]
+) -> np.ndarray:
     """
-    using similarity and distance matrix to compute seg 
+    Expand a coarse label grid back to sample space by repeating along each axis,
+    then pad to exactly match the sample ROI.
 
-    Parameters
-    ----------
-    label_mask : np.ndarray
-        A 3D array of shape (D, H, W) containing integer class labels for each voxel.
-    feature_map : np.ndarray
-        A 4D array with dimensions ordered as (D, H, W, C), where C is the number of feature channels.
-    dist_matrix : optional
-        Precomputed distance matrix for spatial weighting (default: None).
-    spatial_decay : bool, optional
-        Whether to apply spatial decay weighting (default: True).
+    Args:
+        coarse: (Dz, Dy, Dx) int labels in feature space
+        stride: lattice stride (e.g., 16)
+        pad_left: [lz_pad, ly_pad, lx_pad]
+        pad_right: [hz_pad, hy_pad, hx_pad]
+    """
+    # Repeat via np.repeat (clearer than np.kron for 3D)
+    z = np.repeat(coarse, stride, axis=0)
+    z = np.repeat(z,      stride, axis=1)
+    z = np.repeat(z,      stride, axis=2)
+
+    pad = ((pad_left[0], pad_right[0]),
+           (pad_left[1], pad_right[1]),
+           (pad_left[2], pad_right[2]))
+    return np.pad(z, pad_width=pad, mode="constant", constant_values=0).astype(int)
+
+def compute_stride_alignment(
+    roi_offset: Sequence[int], lb: Sequence[int], stride: int
+) -> Tuple[List[int], List[int]]:
+    """
+    Compute the (a) starting voxel indices inside the ROI that land on the feature lattice,
+    and (b) the index offsets in feature space.
 
     Returns
     -------
-    np.ndarray
-        A 3D array of shape (D, H, W) with predicted class labels for each voxel.
+    vol_start_idx : List[int]
+        Start indices inside the sample ROI such that (offset + start - lb) % stride == 0.
+    feats_offset  : List[int]
+        The corresponding starting indices in feature space.
     """
+    vol_start_idx = [stride - (off - base) % stride for off, base in zip(roi_offset, lb)]
+    feats_offset  = [int((start + off - base) // stride)
+                     for start, off, base in zip(vol_start_idx, roi_offset, lb)]
+    return vol_start_idx, feats_offset
 
-    print(f"label_mask.shape {label_mask.shape}")
+def compute_edge_padding(
+    sample_shape: Sequence[int], vol_start_idx: Sequence[int], stride: int
+) -> Tuple[List[int], List[int]]:
+    """
+    For a given ROI sample shape and the in-ROI start index, compute left/right padding
+    needed after upsampling so the output exactly matches the ROI extent.
+    """
+    left_pad = [vol_start_idx[0], vol_start_idx[1], vol_start_idx[2]]
+    right_pad = []
+    for i in range(3):
+        rem = (sample_shape[i] - vol_start_idx[i]) % stride
+        right_pad.append(rem if rem else stride)
+    return left_pad, right_pad
 
-    unique_labels = np.unique(label_mask)
-    unique_labels = unique_labels[unique_labels != 0]  # ignore background (if 0)
+def replicate_nonzero_slices(arr: np.ndarray, n: int) -> np.ndarray:
+    """Replicate each non-zero z-slice to ±n neighbors (in-place copy into a fresh array)."""
+    D, H, W = arr.shape
+    out = arr.copy()
+    nonzero_idx = [i for i in range(D) if np.any(arr[i])]
+    for idx in nonzero_idx:
+        s = max(0, idx - n)
+        e = min(D, idx + n + 1)
+        out[s:e] = arr[idx]
+    return out
 
-    if len(unique_labels) < 2:
-        return np.zeros(label_mask.shape, dtype=np.uint8)
 
-    D,H, W, C = feature_map.shape
-    flat_feats = feature_map.reshape(-1, C)
-    num_pixels = flat_feats.shape[0]
-    class_similarities = np.full((num_pixels, len(unique_labels)), -np.inf)
 
-    for class_idx, class_label in enumerate(unique_labels):
-        class_mask = label_mask == class_label
-        if not np.any(class_mask):
-            continue
+# ------------------------------------------------------------------------
+# Feature map access (parametrized path; was hard-coded before)
+# ------------------------------------------------------------------------
 
-        class_feats = feature_map[class_mask]
-        class_indices = np.where(class_mask.reshape(-1))[0]
+def get_target_feats_map(
+    target_shape: Sequence[int],
+    roi_offset: Sequence[int],
+    lb: Sequence[int],
+    stride: int,
+    feats_zarr_path: str,
+) -> np.ndarray:
+    """
+    Fetch a (C, Z, Y, X) slice from the global feature zarr and pack as (Z, Y, X, C),
+    aligned to the feature lattice and clipped to bounds. Missing areas are zero-filled.
+    """
+    vol_start_idx, feats_offset = compute_stride_alignment(roi_offset, lb, stride)
 
-        if spatail_decay and dist_matrix is not None:
-            sim = (flat_feats @ class_feats.T) * dist_matrix[:, class_indices]
-        else:
-            sim = flat_feats @ class_feats.T
+    feats_map = zarr.open_array(feats_zarr_path, mode="r")
+    C, D, H, W = feats_map.shape
 
-        max_sim = sim.max(axis=1)
-        class_similarities[:, class_idx] = max_sim
+    lz, ly, lx = feats_offset
+    hz, hy, hx = [l + s for l, s in zip((lz, ly, lx), target_shape)]
 
-    # Choose class with the highest similarity
-    predicted_classes = np.argmax(class_similarities, axis=1)
-    mapped_seg_label = np.array([unique_labels[i] for i in predicted_classes])
-    mapped_seg_label = mapped_seg_label.reshape(D,H,W)
-    return mapped_seg_label 
+    # Clip to valid bounds
+    clipped_lz, clipped_ly, clipped_lx = max(0, lz), max(0, ly), max(0, lx)
+    clipped_hz, clipped_hy, clipped_hx = min(D, hz), min(H, hy), min(W, hx)
+
+    index = (slice(None),
+             slice(clipped_lz, clipped_hz),
+             slice(clipped_ly, clipped_hy),
+             slice(clipped_lx, clipped_hx))
+
+    existing = feats_map[index]
+    target = np.zeros((C, *target_shape), dtype=feats_map.dtype)
+
+    z0, y0, x0 = clipped_lz - lz, clipped_ly - ly, clipped_lx - lx
+    z1, y1, x1 = z0 + (clipped_hz - clipped_lz), y0 + (clipped_hy - clipped_ly), x0 + (clipped_hx - clipped_lx)
+    target[:, z0:z1, y0:y1, x0:x1] = existing
+
+    return np.moveaxis(target, 0, -1)  # (Z, Y, X, C)
+
+def map_to_sample_space(
+    mapped_seg_out: np.ndarray,
+    sample_shape: Sequence[int],
+    vol_start_idx: Sequence[int],
+    stride: int,
+) -> np.ndarray:
+    """
+    Upsample a coarse (feature-lattice) label to sample space and pad to match ROI.
+    """
+    mapped_seg_out = np.asarray(mapped_seg_out).squeeze()
+    left_pad, right_pad = compute_edge_padding(sample_shape, vol_start_idx, stride)
+    return upsample_labels_by_stride(mapped_seg_out, stride, left_pad, right_pad)
+
 
 
 def _compute_seg2(label_mask: np.ndarray, feature_map: np.ndarray,  spatial_decay=True,d_sigma=16) -> np.ndarray:
@@ -371,178 +401,234 @@ def _seg_via_conv_head(user_input_label, feature_map, num_epochs=100, lr=1e-3, r
         return pred.detach().cpu().numpy()
 
 
-def seg_via_mlp_head(roi_offset, roi_size, label: np.ndarray, lb, stride=16):
-    vol_start_idx = [(stride - (offset - base) % stride) for offset, base in zip(roi_offset, lb)]
-
-    processed_label = replicate_nonzero_slices(label, n=18)
-    mapped_label = processed_label[
-        vol_start_idx[0]::stride,
-        vol_start_idx[1]::stride,
-        vol_start_idx[2]::stride
-    ][:-1, :-1, :-1]
-
-    target_feats_map = get_target_feats_map(mapped_label.shape, roi_offset=roi_offset, lb=lb, stride=stride)
-
-    start_time = time.time()
-    mapped_seg = _seg_via_mlp_head(user_mask=mapped_label, feature_map=target_feats_map, num_epochs=2000)
-    print(f"mlp compute seg time: {time.time() - start_time:.2f}s")
-
-    return map2sample_space(mapped_seg, roi_size, vol_start_idx, stride)
-
-def seg_via_conv_head(roi_offset, roi_size, label: np.ndarray, lb, stride=16):
-    """
-    Wrapper that parallels seg_via_mlp_head but uses ConvSegHead.
-    """
-    # compute starting indices to align with stride
-    vol_start_idx = [(stride - (offset - lb0) % stride) for offset, lb0 in zip(roi_offset, lb)]
-    # replicate and map label slices
-    processed_label = replicate_nonzero_slices(label, n=18)
-    mapped_label = processed_label[
-        vol_start_idx[0]::stride,
-        vol_start_idx[1]::stride,
-        vol_start_idx[2]::stride
-    ][:-1, :-1, :-1]
-
-    target_feats_map = get_target_feats_map(mapped_label.shape,
-                                           roi_offset=roi_offset,
-                                           lb=lb,
-                                           stride=stride)
-
-    start_time = time.time()
-    mapped_seg = _seg_via_conv_head(
-        user_input_label = mapped_label,
-        feature_map = target_feats_map,
-        num_epochs=2000
-    )
-    print(f"compute conv seg time: {time.time() - start_time:.2f}s")
-
-    return map2sample_space(mapped_seg, roi_size, vol_start_idx, stride)
-
-
-
-
-# --- Segmentation utilities ---
-
-def seg_by_computing_sim(roi_offset, roi_size, label: np.ndarray, lb, stride=16):
-    vol_start_idx = [(stride - (offset - base) % stride) for offset, base in zip(roi_offset, lb)]
-
-    # Map label from sample to feature space
-    processed_label = replicate_nonzero_slices(label, n=18)
-    mapped_label = processed_label[
-        vol_start_idx[0]::stride,
-        vol_start_idx[1]::stride,
-        vol_start_idx[2]::stride
-    ][:-1, :-1, :-1]
-
-    target_feats_map = get_target_feats_map(mapped_label.shape, roi_offset=roi_offset, lb=lb, stride=stride)
-
-
-    start_time = time.time()
-    mapped_seg = _compute_seg2(label_mask=mapped_label, feature_map=target_feats_map, spatial_decay=False)
-    print(f"somputing_sim compute seg time: {time.time() - start_time:.2f}s")
-
-    return map2sample_space(mapped_seg, roi_size, vol_start_idx, stride)
-
-
-
 # --- UI Controller Class ---
 
 class SimpleSeger2(widgets.Container):
-    def __init__(self, viewer1: napari.Viewer, viewer2: napari.Viewer, simple_viewer):
+    """
+    Napari UI controller that lets a user paint sparse 3D labels in a ROI and
+    run prompt-based segmentation using precomputed features.
+
+    Overview
+    --------
+    The tool synchronizes with an external ROI controller (`simple_viewer`) to
+    know the current cube-of-interest (offset and size). The user paints
+    integer labels (>=1) into a `Label` layer, then triggers segmentation
+    via one of three backends:
+
+      1) "computing_sim"  -> Direct feature similarity (optionally with spatial decay)
+      2) "mlp_head"       -> A tiny MLP trained on the painted points' features
+      3) "conv_head"      -> A light Conv head trained over the ROI feature map
+
+    Pipeline (per segmentation)
+    ---------------------------
+    1) Read the ROI offset/size from `simple_viewer`.
+    2) Inflate (replicate) non-empty z-slices in the user label to thicken sparse
+       scribbles along Z. This stabilizes training and similarity votes.
+    3) Downsample/mosaic the user label into feature space by aligning to the
+       global feature stride and cropping to the ROI's feature grid.
+    4) Fetch the matching slice of the global feature map (D, H, W, C) for the ROI.
+    5) Run the chosen backend to produce a coarse label in feature space.
+    6) Upsample the coarse label back to sample space (via stride-aware zoom +
+       padding to exactly fill the sample ROI bounds).
+    7) Write the final segmentation into the `Segout` layer.
+
+    Key Concepts
+    ------------
+    - Feature stride alignment: The global feature volume is typically stride-16
+      w.r.t. the original image grid. Offsets and shapes must be snapped to this
+      lattice to address the correct feature voxels.
+    - Label inflation along Z: user scribbles are often 2D planes; replicating
+      nearby slices (±n) gives 3D context without asking the user to paint
+      every slice.
+    - Stateless backends: each `Seg` click performs a fresh mapping/training
+      pass on the current ROI and labels only; nothing is cached globally.
+
+    Layers
+    ------
+    - `Label`  : user-painted integer labels (>= 1), brush mode enabled.
+    - `Segout` : model's predicted segmentation for the current ROI.
+
+    Buttons
+    -------
+    - "Seg"     : run segmentation with the selected method.
+    - "Clear"   : clear both `Label` and `Segout` in the current ROI.
+    - "Undo"    : revert to the previous `Label` and `Segout` buffers.
+
+    Parameters
+    ----------
+    viewer1 : napari.Viewer
+        The main Napari viewer hosting the label and segmentation layers.
+    viewer2 : napari.Viewer
+        (Currently unused but kept for compatibility.)
+    simple_viewer : object
+        A controller exposing `get_roi_offset()` and `get_roi_size()` to define
+        the active ROI. These may be callables or properties.
+
+    Defaults / Tunables
+    -------------------
+    - stride : int = 16  (feature stride)
+    - lb     : List[int]  (global alignment base per axis; set ~1.5 * stride
+                           away from dataset lower bounds to avoid edge effects)
+    - roi_size : List[int] = [64, 64, 64]
+    - z_inflate : int = 18 (± slices to replicate around non-empty z-planes)
+
+    Notes
+    -----
+    - The global feature map is retrieved on demand for the aligned ROI via
+      `get_target_feats_map`. Its path should be configurable (not hard-coded).
+    - The MLP/Conv heads are intentionally tiny and train per-ROI on the fly;
+      they do not modify the upstream feature extractor.
+    """
+    def __init__(
+        self,
+        viewer1: napari.Viewer,
+        viewer2: napari.Viewer,  # kept for compatibility
+        simple_viewer,
+        *,
+        feats_zarr_path: str = "/home/confetti/data/t1779/mlp_feats.zarr",
+        stride: int = DEFAULT_STRIDE,
+        lb: Sequence[int] = DEFAULT_LB,
+        roi_size: Sequence[int] = DEFAULT_ROI_SIZE,
+        z_inflate: int = DEFAULT_Z_INFLATE,
+    ) -> None:
         super().__init__()
         self.viewer1 = viewer1
         self.simple_viewer = simple_viewer
+        self.feats_zarr_path = feats_zarr_path
 
-        self.stride = 16
-        self.lb = [int(x + 1.5 * self.stride) for x in [3392, 2512, 3504]]
-        self.roi_size = [64, 64, 64]
-        self.init_label_data()
+        self.stride = int(stride)
+        self.lb = list(map(int, lb))
+        self.roi_size = tuple(map(int, roi_size))
+        self.z_inflate = int(z_inflate)
 
+        self._init_label_buffers()
         self._setup_layers()
-        self._setup_buttons()
+        self._setup_controls()
         self._register_callbacks()
 
-    def init_label_data(self):
+    # -------------------------- layer & UI setup --------------------------
+
+    def _init_label_buffers(self) -> None:
         shape = tuple(self.roi_size)
-        self.last_seg_data = np.zeros(shape, dtype=np.uint8)
+        self.last_seg_data   = np.zeros(shape, dtype=np.uint8)
         self.last_label_data = np.zeros(shape, dtype=np.uint8)
         self.current_label_data = np.zeros(shape, dtype=np.uint8)
 
-    def _setup_layers(self):
-        zero_data = np.zeros(self.roi_size, dtype=np.uint8)
-        self.label_layer = self.viewer1.add_labels(zero_data, name='Label')
-        self.segout_layer = self.viewer1.add_labels(zero_data, name='Segout')
+    def _setup_layers(self) -> None:
+        zero = np.zeros(self.roi_size, dtype=np.uint8)
+        self.label_layer  = self.viewer1.add_labels(zero, name="Label")
+        self.segout_layer = self.viewer1.add_labels(zero, name="Segout")
         self.label_layer.brush_size = 30
-        self.label_layer.mode = 'PAINT'
+        self.label_layer.mode = "PAINT"
         self.viewer1.layers.selection = [self.label_layer]
 
-    def _setup_buttons(self):
+    def _setup_controls(self) -> None:
         self.method_selector = widgets.ComboBox(
-                choices=["computing_sim", "mlp_head","conv_head"],
-                value="computing_sim",
-                label="Segmentation Method"
-            )
-        self.seg_button = widgets.PushButton(text="Seg")
-        self.clear_button = widgets.PushButton(text="Clear")
-        self.undo_button = widgets.PushButton(text="Undo")
+            choices=[METHOD_COMPUTE_SIM, METHOD_MLP_HEAD, METHOD_CONV_HEAD],
+            value=METHOD_COMPUTE_SIM,
+            label="Segmentation Method",
+        )
+        self.btn_seg   = widgets.PushButton(text="Seg")
+        self.btn_clear = widgets.PushButton(text="Clear")
+        self.btn_undo  = widgets.PushButton(text="Undo")
 
-        self.seg_button.clicked.connect(self.run_seg)
-        self.clear_button.clicked.connect(self.clear_labels)
-        self.undo_button.clicked.connect(self.undo_labels)
+        self.btn_seg.clicked.connect(self.run_seg)
+        self.btn_clear.clicked.connect(self.clear_labels)
+        self.btn_undo.clicked.connect(self.undo_labels)
 
-        self.extend([self.method_selector,self.seg_button, self.clear_button, self.undo_button])
+        self.extend([self.method_selector, self.btn_seg, self.btn_clear, self.btn_undo])
 
-    def _register_callbacks(self):
-        self.simple_viewer.roi_layer.events.data.connect(self.prepare_seg)
+    def _register_callbacks(self) -> None:
+        # Refresh ROI-sized arrays whenever the ROI layer changes
+        self.simple_viewer.roi_layer.events.data.connect(self._prepare_for_new_roi)
 
-    # --- Button Actions ---
+    # ------------------------------ actions ------------------------------
 
-    def prepare_seg(self):
+    def _prepare_for_new_roi(self) -> None:
         roi_size = self.read_roi_size()
-        self.label_layer.data = np.zeros(roi_size, dtype=np.uint8)
+        self.label_layer.data  = np.zeros(roi_size, dtype=np.uint8)
         self.segout_layer.data = np.zeros(roi_size, dtype=np.uint8)
         self.current_label_data = np.zeros(roi_size, dtype=np.uint8)
 
-    def run_seg(self):
+    def run_seg(self) -> None:
         self._backup_current_state()
+
         roi_offset = self.read_roi_offset()
-        roi_size = self.read_roi_size()
+        roi_size   = self.read_roi_size()
         label_data = self.label_layer.data.copy()
 
         method = self.method_selector.value
-        if method == "computing_sim":
-            seg_out = seg_by_computing_sim(roi_offset, roi_size, label_data, self.lb, stride=self.stride)
-        elif method == "mlp_head":
-            seg_out = seg_via_mlp_head(roi_offset, roi_size, label_data, self.lb, stride=self.stride)
-        elif method =='conv_head':
-            seg_out = seg_via_conv_head(roi_offset, roi_size, label_data, self.lb, stride=self.stride)
-        else:
-            print(f"Unknown method: {method}")
-            return
 
+        # Step 1: inflate sparse labels along Z
+        inflated = replicate_nonzero_slices(label_data, n=self.z_inflate)
+
+        # Step 2: compute alignment and downsample label into feature grid
+        vol_start_idx, _ = compute_stride_alignment(roi_offset, self.lb, self.stride)
+        mapped_label = inflated[
+            vol_start_idx[0]::self.stride,
+            vol_start_idx[1]::self.stride,
+            vol_start_idx[2]::self.stride,
+        ][:-1, :-1, :-1]  # keep consistent with feature tiling
+
+        # Step 3: fetch aligned feature subvolume
+        feats = get_target_feats_map(
+            mapped_label.shape,
+            roi_offset=roi_offset,
+            lb=self.lb,
+            stride=self.stride,
+            feats_zarr_path=self.feats_zarr_path,
+        )
+
+        # Step 4: run backend
+        start = time.time()
+        if method == METHOD_COMPUTE_SIM:
+            mapped_seg = _compute_seg2(
+                label_mask=mapped_label, feature_map=feats, spatial_decay=False
+            )
+        elif method == METHOD_MLP_HEAD:
+            mapped_seg = _seg_via_mlp_head(
+                user_mask=mapped_label, feature_map=feats, num_epochs=2000
+            )
+        elif method == METHOD_CONV_HEAD:
+            mapped_seg = _seg_via_conv_head(
+                user_input_label=mapped_label, feature_map=feats, num_epochs=2000
+            )
+        else:
+            print(f"[WARN] Unknown method: {method}")
+            return
+        print(f"[INFO] Segmentation time: {time.time() - start:.2f}s")
+
+        # Step 5: upsample back to sample space
+        seg_out = map_to_sample_space(mapped_seg, roi_size, vol_start_idx, self.stride)
+
+        # Step 6: display
         self.segout_layer.data = seg_out
         self.viewer1.layers.selection = [self.label_layer]
 
-    def clear_labels(self):
+    def clear_labels(self) -> None:
         shape = self.label_layer.data.shape
-        self.label_layer.data = np.zeros(shape, dtype=np.uint8)
+        self.label_layer.data  = np.zeros(shape, dtype=np.uint8)
         self.segout_layer.data = np.zeros(shape, dtype=np.uint8)
         self.viewer1.layers.selection = [self.label_layer]
 
-    def undo_labels(self):
-        self.label_layer.data = self.last_label_data
+    def undo_labels(self) -> None:
+        self.label_layer.data  = self.last_label_data
         self.segout_layer.data = self.last_seg_data
         self.viewer1.layers.selection = [self.label_layer]
 
-    # --- Utilities ---
+    # ------------------------------ helpers ------------------------------
 
-    def _backup_current_state(self):
-        self.last_label_data = self.current_label_data.copy()
-        self.last_seg_data = self.segout_layer.data.copy()
-        self.current_label_data = self.label_layer.data.copy()
+    def _backup_current_state(self) -> None:
+        self.last_label_data     = self.current_label_data.copy()
+        self.last_seg_data       = self.segout_layer.data.copy()
+        self.current_label_data  = self.label_layer.data.copy()
 
-    def read_roi_offset(self):
-        return self.simple_viewer.get_roi_offset
+    def read_roi_offset(self) -> Tuple[int, int, int]:
+        # accept either property or method on simple_viewer
+        return tuple(_as_callable_or_value(self.simple_viewer.get_roi_offset))
 
-    def read_roi_size(self):
+    def read_roi_size(self) -> Tuple[int, int, int]:
+        return tuple(_as_callable_or_value(self.simple_viewer.get_roi_size))
+    
+
         return self.simple_viewer.get_roi_size

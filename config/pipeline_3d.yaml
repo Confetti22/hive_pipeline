@@ -1,12 +1,12 @@
-run_id: "exp002_dk"             # will create runs/exp001/*
-dims: 2
+run_id: "exp004_t11"             # will create runs/exp001/*
+dims: 3
 paths:
-  input_image: "/home/confetti/data/dk/MD585/half_downsampled"
+  input_image: "/home/confetti/mnt/data/VISoR_Reconstruction/SIAT_SIAT/BiGuoqiang/Mouse_Brain/20210131_ZSS_USTC_THY1-YFP_1779_1/Reconstruction_1.0/z00000_c1.ims.part"
   
-  img_channel: 3 #
-  resol: 25 # in um
+  img_channel: 1 #
+  resol: 1   # in um
   level: 0   # level and channel are used if input is .ims file
-  channel: 1
+  channel: 2  #channel used in .ims file
 
   output_root: "runs"
 
@@ -14,7 +14,7 @@ paths:
   ae_train_folder: "ae_train"         # buid a dir runs/<run_id>/data/<ae_train_folder>
   ae_test_folder:  "ae_test"           # build a dir runs/<run_id>/data/<ae_test_folder>
   ae_out_folder: "ae_out"              # build a dir runs/<run_id>/<ae_out_folder>
-  ae_weight_path: "/home/confetti/e5_workspace/hive1_pipeline/runs/exp002_dk/ae_out/weights/[16, 24, 32]_[5, 5, 3]/best.pth"
+  ae_weight_path: 
   
   #for feature extraction
   zarr_name: "${autoencoder.ae_exp_name}.zarr"          #save zarr features under  # build a dir runs/<run_id>/data/<zarr_name>
@@ -25,12 +25,13 @@ paths:
   mlp_weight_path:  
 
 crop:
-  roi_size: 32  # size of each roi
+  roi_size: 64  # size of each roi
   train_split: 0.8  # (0-split )z range will be used in train, and (split,1)z range for test if dims=3, else, along the y axis split the dataset
   split_axis: 1 # 0=Z, 1=Y, 2=X 
-  entropy_thres: 3  # 2.7 for 4um macaque nissle channel imaging
-  amount: 2048  #will sample amount train rois and 0.2*amount test rois
-  sample_range:  
+  entropy_thres: 1.7   # 2.7 for 4um macaque nissle channel imaging
+  amount: 100  #will sample amount train rois and 0.2*amount test rois
+  sample_offset: [3392,2512,7008]  
+  sample_volume_size: [6784,5000,4000]
 
 autoencoder:
   # New: name each AE training run under this dataset/run_id
@@ -38,7 +39,7 @@ autoencoder:
   encoder_model_name: encoder  # the same arch with encoder in ae, used for step2 feature extraction
   architecture: ae
   block_type:      # block_type can be  'double' 'triple' or empty(will use one conv each layer)
-  filters: [16,24,32]  # filters number can not be the same consecutively
+  filters: [32,64,96]  # filters number can not be the same consecutively
   # filters: [32,64,96]  # filters number can not be the same consecutively
   kernel_size: [5,5,3]
   ae_exp_name: "${autoencoder.filters}_${autoencoder.kernel_size}"
@@ -58,7 +59,7 @@ autoencoder:
   # trainer:
   trainer_name: 'trainer' #trainer to choose
   save_every: 50 #save frequency
-  epoch_num: 100 
+  epoch_num: 400 
   batch_size: 256 
   fp16: false 
   start_epoch: 0
@@ -73,20 +74,19 @@ autoencoder:
 feature_extract:
 
   # Extract from the WHOLE input image using the trained encoder
-  batch_size: 65536
-  global_offset:  [0,0,0] 
-  whole_volume_size:   # if empty, will use the input image size
-  region_size:  [1,1536,1536] 
-  roi_size:  24 # will be used in all dims
-  roi_stride:  4 # will be used in all dims
+  batch_size: 256 
+  global_offset: [3392,2512,7008] 
+  whole_volume_size: [6784,5000,4000]  # if empty, will use the input image size
+  region_size:  [64,1536,1536] 
+  roi_size:  64 # will be used in all dims
+  roi_stride:  16 # will be used in all dims
   #will apply a adaptive_avg pooling to reduce spatial size to 1
 
 contrastive_mlp:
   #_______for mlp_encoder_____
   # New: name each contrastive-MLP training run under this dataset/run_id
   contastive_exp_name: "AE${autoencoder.ae_exp_name}_CNTRSTrun1"
-  mlp_filters: [32,24,12]
-  last_encoder: False
+  mlp_filters: [96,48,24,12]
 
   # trainer:
   save_every: 50 #save frequency

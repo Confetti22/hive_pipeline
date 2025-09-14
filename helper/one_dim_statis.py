@@ -524,7 +524,7 @@ class OneDimStatis_roi(widgets.Container):
         stride = 16 
         dataset = TraverseDataset3d(mlp_roi,stride=16,win_size=(64,64,64),verbose=True) 
         roi_nums = dataset.get_sample_shape()
-        loader = DataLoader(dataset,batch_size= 256,shuffle=None,drop_last=False) 
+        loader = DataLoader(dataset,batch_size= 128,shuffle=None,drop_last=False) 
         #shpae of feats_map should be (h,w,c)
         mlp_feats_list = get_feature_list('cuda',mlp_model,loader) 
         self.mlp_feats= mlp_feats_list.reshape(roi_nums[1],roi_nums[2],-1)

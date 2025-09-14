@@ -2,7 +2,6 @@ run_id: "exp003_widefield"             # will create runs/exp001/*
 dims: 2
 paths:
   input_image: "/home/confetti/e5_data/wide_filed/padded_nuclei_channel"
-  # input_image: "/home/confetti/e5_data/wide_filed/padded_nuclei_channel"
   img_channel: 1 #
   resol: 0.5 # in um
 
@@ -15,7 +14,7 @@ paths:
   ae_train_folder: "ae_train"         # buid a dir runs/<run_id>/data/<ae_train_folder>
   ae_test_folder:  "ae_test"           # build a dir runs/<run_id>/data/<ae_test_folder>
   ae_out_folder: "ae_out"              # build a dir runs/<run_id>/<ae_out_folder>
-  ae_weight_path: "/home/confetti/e5_workspace/hive1_pipeline/runs/exp003_widefield/ae_out/weights/aeexp1/Epoch_251.pth"
+  ae_weight_path: 
   
   #for feature extraction
   zarr_name: "${autoencoder.ae_exp_name}.zarr"          #save zarr features under  # build a dir runs/<run_id>/data/<zarr_name>
@@ -42,7 +41,7 @@ autoencoder:
   filters: [16,24,32,48]  # filters number can not be the same consecutively
   # filters: [32,64,96]  # filters number can not be the same consecutively
   kernel_size: [7,5,5,3]
-  ae_exp_name: "aeexp1"
+  ae_exp_name: "${autoencoder.filters}_${autoencoder.kernel_size}"
   in_channel: ${paths.img_channel}
   out_channel: ${paths.img_channel}   #for last channel of decoder, set to 1 for auto input regression
   pad_mode: 'reflect'
@@ -74,24 +73,24 @@ autoencoder:
 feature_extract:
 
   # Extract from the WHOLE input image using the trained encoder
-  batch_size: 393216 
+  batch_size: 1572864 
   global_offset:  [0,0,0] 
   whole_volume_size:   # if empty, will use the input image size
-  region_size:  [1,1536,1536] 
-  roi_size:  64 # will be used in all dims
-  roi_stride:  32 # will be used in all dims
+  region_size:  [1,768,768] 
+  roi_size:  24 # will be used in all dims
+  roi_stride:  2 # will be used in all dims
   #will apply a adaptive_avg pooling to reduce spatial size to 1
 
 contrastive_mlp:
   #_______for mlp_encoder_____
   # New: name each contrastive-MLP training run under this dataset/run_id
   contastive_exp_name: "AE${autoencoder.ae_exp_name}_CNTRSTrun1"
-  mlp_filters: [48,24,12]
+  mlp_filters: [32,24,12]
   last_encoder: False
 
   # trainer:
   save_every: 50 #save frequency
-  epoch_num: 3000
+  epoch_num: 1000
   num_pairs: 16384 
   batch_size: 2048 
   start_epoch: 0
@@ -101,7 +100,7 @@ contrastive_mlp:
   n_views: 2
   pos_topk: False
   pos_weight_ratio: 2
-  d_near: 4 # should be decided on input resolution  
+  d_near: 2 # should be decided on input resolution  
 
   # solver:
   optimizer: "adam"
@@ -113,7 +112,7 @@ contrastive_mlp:
 
 
 exec:
-  use_slurm:  False # true to submit steps via sbatch
+  use_slurm: False              # true to submit steps via sbatch
   sbatch:
     partition: "compute"
     nodelist: "c003"

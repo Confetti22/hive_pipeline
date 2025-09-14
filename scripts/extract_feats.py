@@ -64,6 +64,7 @@ class VolumeReader:
         self.ims_channel = ims_channel
 
         self._is_dir = self.path.is_dir()
+        print(f"############{self.path= }, {self._is_dir= }")
         self._dir_files: list[Path] = []
         self._handle = None    # ims object or ndarray memmap
         self._shape: Tuple[int,int,int,int] | None = None  # (D,H,W,C)

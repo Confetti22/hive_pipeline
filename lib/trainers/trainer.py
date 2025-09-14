@@ -315,6 +315,8 @@ class Trainer:
     def load_if_available(self):
 
         ae_exp_name = getattr(self.args, 'ae_exp_name', 'default')
+        print(f"checking for existing ckpts ")
+        print(f'{self.args.out}/weights/{ae_exp_name}/Epoch_*.pth')
         ckpts = sorted(glob(f'{self.args.out}/weights/{ae_exp_name}/Epoch_*.pth'))
 
         if len(ckpts) >0:
