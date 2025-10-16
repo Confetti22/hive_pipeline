@@ -141,3 +141,20 @@ def erode_labels(
             out[sl_r, sl_c] = tmp
 
     return out
+
+def main():
+    import napari
+    import tifffile as tif
+    mask_vol = tif.imread("/home/confetti/data/t1779/register_data_roi/cp_mask_reduced.tif") 
+    mask = mask_vol[5]
+    eroded = erode_labels(mask,width=40)
+    relabelled,mappings = relabel_sequential(eroded)
+    viewer = napari.Viewer(ndisplay=2)
+    viewer.add_labels(mask, name='ori_mask')
+    viewer.add_labels(eroded,name = 'eroded')
+    viewer.add_labels(relabelled, name = 'relabelled')
+    napari.run()
+
+
+if __name__ == "__main__":
+    main()

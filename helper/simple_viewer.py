@@ -116,7 +116,7 @@ class SimpleViewer2(widgets.Container):
         # value change of these 6 parameters will not trigger anything, after user change any value of these, click refresh to load new data
         self.x_size = widgets.Slider(label="x size", value=1536, min=0, max=10000,step = 64)
         self.y_size = widgets.Slider(label="y size", value=1536, min=0, max=10000,step = 64)
-        self.z_size = widgets.Slider(label="z size", value=64, min=0, max=10000,step = 64)
+        self.z_size = widgets.Slider(label="z size", value=12, min=0, max=10000,step = 64)
         self.x = widgets.LineEdit(label="x offset", value=0)
         self.y = widgets.LineEdit(label="y offset", value=0)
         self.z = widgets.LineEdit(label="z offset", value=0)
@@ -220,16 +220,17 @@ class SimpleViewer2(widgets.Container):
             return
 
         roi_offset = [int(float(self.z.value)) ,int(float(self.y.value)), int(float(self.x.value))]
-        roi_size = [
-                    min(int(self.z_size.value), 128),
-                    min(int(self.y_size.value), 1536),
-                    min(int(self.x_size.value), 1536)
-                ]
         # roi_size = [
-        #             int(self.z_size.value),
-        #             int(self.y_size.value), 
-        #             int(self.x_size.value), 
+        #             min(int(self.z_size.value), 128),
+        #             min(int(self.y_size.value), 1536),
+        #             min(int(self.x_size.value), 1536)
         #         ]
+
+        roi_size = [
+                    int(self.z_size.value),
+                    int(self.y_size.value), 
+                    int(self.x_size.value), 
+                ]
         self.add_data_given_offset_size(roi_offset,roi_size)
 
 

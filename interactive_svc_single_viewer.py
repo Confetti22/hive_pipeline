@@ -40,6 +40,7 @@ from typing import  List, Optional, Sequence, Tuple, Union
 from torchsummary import summary
 from skimage.restoration import denoise_tv_chambolle
 from helper.napari_view_utilis import _filter_layer_name_with_pattern
+from helper.mask_erosion import erode_labels, relabel_sequential
 
 import numpy as np
 import torch
@@ -97,6 +98,17 @@ def load_3d_rm009():
     vol = tif.imread("/home/confetti/data/rm009/rm009_roi/4/Z13805_C4.tif")
     vol = np.squeeze(vol)
     return vol
+
+def load_t1779():
+
+    mask_vol = tif.imread("/home/confetti/data/t1779/register_data_roi/cp_mask_reduced.tif") 
+    mask = mask_vol[5]
+    eroded_mask = erode_labels(mask,width=40)
+    relabelled_mask,mappings = relabel_sequential(eroded_mask)
+
+    roi_vol = tif.imread("/home/confetti/data/t1779/register_data_roi/cp.tif")
+    roi = roi_vol[5]
+    return roi, relabelled_mask
 
 # ----------------------------------
 # Backbones (project-specific stubs)
@@ -878,12 +890,14 @@ def add_ui(viewer: napari.Viewer) -> None:
     if "user_labels" in viewer.layers:
         viewer.layers.remove("user_labels")
 
-    roi = load_3d_rm009()
+    # roi = load_3d_rm009()
     # roi = load_DKROI() 
+    roi, label = load_t1779()
     roi_shape = roi.shape[:state["dims"]]
 
     state["roi"] = roi
     state["labels"] = np.zeros(roi_shape,dtype=np.uint8) 
+    state["labels"] = label 
 
     viewer.add_image(state["roi"], name="roi")
     viewer.add_labels(state["labels"], name="user_labels")
