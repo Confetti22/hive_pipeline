@@ -29,7 +29,7 @@ from napari.utils.notifications import show_info
 from napari.layers.utils.layer_utils import dims_displayed_world_to_layer
 import os
 
-def _filter_layer_name_with_pattern(layers,name_patterns):
+def _filter_layer_name_with_pattern(layers,name_patterns:list):
     layer_names=set()
     for pattern in name_patterns:
         lst=[layer.name for layer  in layers if pattern in layer.name]

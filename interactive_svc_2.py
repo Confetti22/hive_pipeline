@@ -48,7 +48,10 @@ device = 'cuda'
 # [NEW] Load pipeline config and set encoder/MLP specifics
 args = load_cfg('config/t11_3d.yaml')
 args.last_encoder = True
+
+#if avgpooling is not added, the feature_map is noisy
 args.avg_pool_size = (8, 8, 8)
+# args.avg_pool_size = None 
 
 # the second row comments is for later contrastive learning result
 args.mlp_filters = [96, 48, 24, 12]

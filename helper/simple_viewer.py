@@ -114,9 +114,9 @@ class SimpleViewer2(widgets.Container):
         )
         
         # value change of these 6 parameters will not trigger anything, after user change any value of these, click refresh to load new data
-        self.x_size = widgets.Slider(label="x size", value=1024, min=0, max=10000,step = 64)
-        self.y_size = widgets.Slider(label="y size", value=1024, min=0, max=10000,step = 64)
-        self.z_size = widgets.Slider(label="z size", value=128, min=0, max=10000,step = 64)
+        self.x_size = widgets.Slider(label="x size", value=1536, min=0, max=10000,step = 64)
+        self.y_size = widgets.Slider(label="y size", value=1536, min=0, max=10000,step = 64)
+        self.z_size = widgets.Slider(label="z size", value=64, min=0, max=10000,step = 64)
         self.x = widgets.LineEdit(label="x offset", value=0)
         self.y = widgets.LineEdit(label="y offset", value=0)
         self.z = widgets.LineEdit(label="z offset", value=0)

@@ -1,3 +1,4 @@
+from __future__ import annotations
 import sys
 import os
 project_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -12,7 +13,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from lib.arch.seg import SegmentationHead,ConvSegHead
-from __future__ import annotations
 
 import time
 from typing import Callable, Iterable, List, Sequence, Tuple, Union, Optional
