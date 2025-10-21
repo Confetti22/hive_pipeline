@@ -91,3 +91,16 @@ print(f"finished! time: {time.time()-current}")
 
 
 # %%
+import numpy as np
+
+
+scores = np.array([1, 2, 5, 20, 50])
+p = np.exp(scores) / np.exp(scores).sum()
+print(p)
+
+#%%
+T=10
+s_p = np.exp(scores/T) / np.exp(scores/T).sum()
+print(s_p)
+
+# %%

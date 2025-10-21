@@ -95,7 +95,10 @@ def load_DKROI():
 def load_3d_rm009():
     "the training dataset is from Z55200, Z55500...Z67800 (1um) ,  transfer to 4um space is from Z13800~Z16950"
     "here load a vol seperated from training range"
-    vol = tif.imread("/home/confetti/data/rm009/rm009_roi/4/Z13805_C4.tif")
+    # vol = tif.imread("/home/confetti/data/rm009/rm009_roi/4/Z13805_C4.tif")
+    vol = tif.imread("/home/confetti/data/rm009/rm009_roi/z16200_z16276C4_d76_h3500_w5250.tif")
+    d,h,w = vol.shape
+    # vol = vol[:,:int(h//2),int(w//2):]
     vol = np.squeeze(vol)
     return vol
 
@@ -103,7 +106,7 @@ def load_t1779():
 
     mask_vol = tif.imread("/home/confetti/data/t1779/register_data_roi/cp_mask_reduced.tif") 
     mask = mask_vol[5]
-    eroded_mask = erode_labels(mask,width=40)
+    eroded_mask = erode_labels(mask,width=70)
     relabelled_mask,mappings = relabel_sequential(eroded_mask)
 
     roi_vol = tif.imread("/home/confetti/data/t1779/register_data_roi/cp.tif")
@@ -283,20 +286,6 @@ def _ensure_tensor_chw_or_cdhw(img: np.ndarray, dims: int,model_name:str) -> tor
 class SparseLabelSegDataset(Dataset):
     """Dataset from a single ROI and sparse integer labels.
 
-    Logic
-    -----
-    - For dims=2: use the full image if small, otherwise extract tiles covering labeled pixels.
-    - For dims=3: inflate labels along Z and sample tiles around labeled voxels.
-    if pathc_size is None, use full image or full slices containing labels.
-
-    Note: This is a scaffold; adapt patch sampling to your data scale.
-
-    Args:
-        image: numpy array (H,W) or (D,H,W)
-        labels: numpy int array same shape as image
-        dims: 2 or 3
-        patch_size: tuple for spatial patch (h,w) or (d,h,w)
-        max_samples: cap number of sampled patches for quick interaction
     """
     def __init__(self,
                  image: np.ndarray,
@@ -882,7 +871,7 @@ def add_ui(viewer: napari.Viewer) -> None:
         "segmodel": None,           # Modelsegmodel
         "pred": None,             # np.ndarray prediction
         "feat": None,             # np.ndarray feature volume [C,H,W] or [C,D,H,W]
-        "dims": 2,
+        "dims": 3,
     }
 
     if "roi" in viewer.layers:
@@ -890,14 +879,14 @@ def add_ui(viewer: napari.Viewer) -> None:
     if "user_labels" in viewer.layers:
         viewer.layers.remove("user_labels")
 
-    # roi = load_3d_rm009()
+    roi = load_3d_rm009()
     # roi = load_DKROI() 
-    roi, label = load_t1779()
+    # roi, label = load_t1779()
     roi_shape = roi.shape[:state["dims"]]
 
     state["roi"] = roi
     state["labels"] = np.zeros(roi_shape,dtype=np.uint8) 
-    state["labels"] = label 
+    # state["labels"] = label 
 
     viewer.add_image(state["roi"], name="roi")
     viewer.add_labels(state["labels"], name="user_labels")
@@ -1075,7 +1064,7 @@ def add_ui(viewer: napari.Viewer) -> None:
         call_button="eval SegHead",
         **COMMON_WIDGETS
     )
-    def eval_widget(tile_h: int = 512, tile_w: int = 512, tile_d: int = 1,
+    def eval_widget(tile_h: int = 1024, tile_w: int = 1024, tile_d: int = 1,
                    tv_denoise_weight : float = 0.1,
                     capture_features: bool = False):
         tile_d = int(tile_d)
