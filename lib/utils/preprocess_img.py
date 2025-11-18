@@ -24,8 +24,8 @@ def pad_to_multiple_of_unit(img,unit = 8):
     )
     return img_padded
 
-IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32)
-IMAGENET_STD  = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32)
+IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406])  # Let autocast determine dtype
+IMAGENET_STD  = torch.tensor([0.229, 0.224, 0.225])  # Let autocast determine dtype
 
 
 def preprocess_uint16_for_imagenet(
@@ -104,7 +104,7 @@ def preprocess_uint16_for_imagenet(
 
     # ---- to torch (C,H,W) or (c,d,h,w)
     arr = np.moveaxis(arr,-1,0)
-    t = torch.from_numpy(arr).contiguous().to(torch.float32)
+    t = torch.from_numpy(arr).contiguous()  # Let autocast determine dtype
 
     # ---- ImageNet z-standardization (expect inputs in [0,1])
     if t.shape[0]== 3:
@@ -158,11 +158,11 @@ def preprocess_uint8rgb_for_imagenet(img: np.ndarray) -> torch.Tensor:
 
     # 3. normalize
     if len(arr.shape) ==3:
-        mean = np.array(IMAGENET_MEAN, dtype=np.float32)[:, None, None]
-        std = np.array(IMAGENET_STD, dtype=np.float32)[:, None, None]
+        mean = np.array(IMAGENET_MEAN)[:, None, None]
+        std = np.array(IMAGENET_STD)[:, None, None]
     else:
-        mean = np.array(IMAGENET_MEAN, dtype=np.float32)[:, None, None,None]
-        std = np.array(IMAGENET_STD, dtype=np.float32)[:, None, None,None]
+        mean = np.array(IMAGENET_MEAN)[:, None, None,None]
+        std = np.array(IMAGENET_STD)[:, None, None,None]
 
     arr = (arr - mean) / std               # per-channel normalize
 

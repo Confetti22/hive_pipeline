@@ -104,14 +104,20 @@ def load_3d_rm009():
 
 def load_t1779():
 
-    mask_vol = tif.imread("/home/confetti/data/t1779/register_data_roi/cp_mask_reduced.tif") 
-    mask = mask_vol[5]
-    eroded_mask = erode_labels(mask,width=70)
-    relabelled_mask,mappings = relabel_sequential(eroded_mask)
+    # mask_vol = tif.imread("/home/confetti/data/t1779/register_data_roi/cp_mask_reduced.tif") 
+    # mask = mask_vol[5]
+    # eroded_mask = erode_labels(mask,width=70)
+    # relabelled_mask,mappings = relabel_sequential(eroded_mask)
 
-    roi_vol = tif.imread("/home/confetti/data/t1779/register_data_roi/cp.tif")
-    roi = roi_vol[5]
-    return roi, relabelled_mask
+    roi_vol = tif.imread("/home/confetti/data/t1779/scenes/ssp_1536_1536_12.tif")
+    roi_label = tif.imread("/home/confetti/data/t1779/scenes/hp_label_1536_1536.tif")
+
+    roi = np.max(roi_vol[3:9],axis=0)  # max proj to 2d
+    roi = np.squeeze(roi)
+    roi_label = np.squeeze(roi_label)
+    assert len(roi.shape) ==2
+
+    return roi , roi_label
 
 # ----------------------------------
 # Backbones (project-specific stubs)
@@ -871,7 +877,7 @@ def add_ui(viewer: napari.Viewer) -> None:
         "segmodel": None,           # Modelsegmodel
         "pred": None,             # np.ndarray prediction
         "feat": None,             # np.ndarray feature volume [C,H,W] or [C,D,H,W]
-        "dims": 3,
+        "dims": 2,
     }
 
     if "roi" in viewer.layers:
@@ -879,14 +885,14 @@ def add_ui(viewer: napari.Viewer) -> None:
     if "user_labels" in viewer.layers:
         viewer.layers.remove("user_labels")
 
-    roi = load_3d_rm009()
+    # roi = load_3d_rm009()
     # roi = load_DKROI() 
-    # roi, label = load_t1779()
+    roi, label = load_t1779()
     roi_shape = roi.shape[:state["dims"]]
 
     state["roi"] = roi
-    state["labels"] = np.zeros(roi_shape,dtype=np.uint8) 
-    # state["labels"] = label 
+    # state["labels"] = np.zeros(roi_shape,dtype=np.uint8) 
+    state["labels"] = label 
 
     viewer.add_image(state["roi"], name="roi")
     viewer.add_labels(state["labels"], name="user_labels")
@@ -927,7 +933,7 @@ def add_ui(viewer: napari.Viewer) -> None:
         patch_w={"widget_type": "LineEdit"},
     )
     def train_widget(epochs: int = 2, batch_size: int = 16, lr: float = 1e-4,
-                     patch_h: int =1024, patch_w: int = 1024,
+                     patch_h: int =1536 , patch_w: int = 1536,
                      patch_d: int = 1):
         """Train lightweight seghead from sparse labels.
 
@@ -1064,7 +1070,7 @@ def add_ui(viewer: napari.Viewer) -> None:
         call_button="eval SegHead",
         **COMMON_WIDGETS
     )
-    def eval_widget(tile_h: int = 1024, tile_w: int = 1024, tile_d: int = 1,
+    def eval_widget(tile_h: int = 1536, tile_w: int = 1536, tile_d: int = 1,
                    tv_denoise_weight : float = 0.1,
                     capture_features: bool = False):
         tile_d = int(tile_d)

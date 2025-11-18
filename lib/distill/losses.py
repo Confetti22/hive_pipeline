@@ -23,7 +23,30 @@ class FeatureMimicCosine(nn.Module):
     def forward(self, s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         s, t = self._normalize(s, t.detach())
         cos = F.cosine_similarity(s, t, dim=-1)
-        return (1.0 - cos).mean()
+        return (torch.tensor(1.0, device=cos.device, dtype=cos.dtype) - cos).mean()
+
+
+class FeatureMimicMSE(nn.Module):
+    """
+    MSE-based feature mimic loss that directly computes MSE between adapted student features (s_f) 
+    and teacher features (t_f) without any normalization.
+    """
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """
+        Compute MSE loss between student and teacher features.
+        
+        Args:
+            s: Student features (adapted) of shape [B, N, D]
+            t: Teacher features of shape [B, N, D]
+            
+        Returns:
+            MSE loss scalar
+        """
+        # Direct MSE computation without normalization
+        return F.mse_loss(s, t.detach())
 
 
 def _local_affinity_profile(x: torch.Tensor, anchors=64, window=7) -> torch.Tensor:

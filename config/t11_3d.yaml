@@ -5,6 +5,7 @@ dims : 3
 model_name: ae
 encoder_model_name: encoder
 architecture: ae_old
+downsample_strategy: 'conv_stride'
 block_type:      # block_type can be  'double' 'triple' or empty(will use one conv each layer)
 filters: [32,64,96]  # filters number can not be the same consecutively
 kernel_size: [5,5,3]

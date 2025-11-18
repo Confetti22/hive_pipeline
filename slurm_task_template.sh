@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SCRIPT_PATH="/share/home/shiqiz/workspace/hive1/training_seg_fcn.py"
+SCRIPT_PATH="/share/home/shiqiz/workspace/hive1_pipeline/scripts/finetune_dinov3.py"
 SCRIPT_NAME=$(basename "$SCRIPT_PATH" .py)
 
 sbatch --job-name="$SCRIPT_NAME" <<EOF
@@ -10,14 +10,23 @@ sbatch --job-name="$SCRIPT_NAME" <<EOF
 #SBATCH --time=96:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=12
-#SBATCH --mem=20G
+#SBATCH --mem=128G
 #SBATCH --partition=compute
 #SBATCH --nodelist=c003
 #SBATCH --gres=gpu:1
 
-# Load environment
-# eval "\$(conda shell.bash hook)"
-# conda activate /share/home/shiqiz/.conda/envs/pytorch
+# Load conda environment properly
+source /share/home/shiqiz/.bashrc
+# Alternative: source /opt/conda/etc/profile.d/conda.sh
+# Alternative: source ~/.bashrc
+
+# Initialize conda
+eval "\$(conda shell.bash hook)"
+conda activate /share/home/shiqiz/.conda/envs/pytorch
+
+# Verify conda is working
+which python
+python --version
 
 # Run the script
 python "$SCRIPT_PATH"

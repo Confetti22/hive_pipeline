@@ -1,0 +1,49 @@
+# Configuration for DINOv3 finetuning on single-channel uint16 GrayTiffDataset
+
+# Required: Path to the pretrained DINOv3 model
+model_dir: /home/confetti/e5_workspace/hive1/models/facebook/dinov3-vits16-pretrain-lvd1689m
+# model_dir: /share/home/shiqiz/workspace/hive1/models/facebook/dinov3-vits16-pretrain-lvd1689m
+
+# Training data paths (files or directories containing .tif/.tiff files)
+
+train_paths: [
+
+              # '/share/home/shiqiz/data/t1779/z_slices_512_512', #15924 items
+              # "/share/home/shiqiz/data/wide_filed/vsi_train",   #8323 items
+              # '/share/home/shiqiz/data/rm009/boundary_seg/new_boundary_seg_data/z_slices',  #51649
+              '/home/confetti/data/t1779/z_slices_512_512', #15924 items
+              # "/home/confetti/data/wide_filed/vsi_train",   #8323 items
+              # '/home/confetti/data/rm009/boundary_seg/new_boundary_seg_data/z_slices',  #25824#
+]
+
+# Data Preprocessing
+crop_size: null # Optional central crop size (e.g., 224, 256, 512). If null, no cropping is applied.
+
+# Model Configuration
+freeze_backbone: false  # If true, only finetune the final layers
+freeze_layers: 0        # Number of layers to freeze from the beginning (0 = no freezing)
+
+# Training Configuration
+batch_size: 16 
+epochs: 100
+learning_rate: 1e-4
+weight_decay: 0.01
+num_workers: 4
+
+# Learning Rate Scheduler
+scheduler_type: cosine_warmup  # Options: cosine, step, exponential, cosine_warmup, none
+scheduler_warmup_epochs: 10    # Number of warmup epochs (only used with cosine_warmup)
+scheduler_min_lr: 1e-6        # Minimum learning rate (used with cosine schedulers)
+
+# Model Saving
+save_every_epoch: 1        # Save model weights every N epochs (0 to disable)
+save_dir: ./finetune_checkpoints/finetune_t1779 # Directory to save model checkpoints
+
+# Validation (optional)
+val_paths: []                 # Paths to validation data (empty list to skip validation)
+val_every_epoch: 5            # Run validation every N epochs (0 to disable)
+
+# Logging
+log_every_n_steps: 50         # Log training progress every N steps
+use_wandb: false              # Enable Weights & Biases logging
+wandb_project: "dinov3-finetune"  # W&B project name
