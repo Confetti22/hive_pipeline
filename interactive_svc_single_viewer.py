@@ -604,7 +604,7 @@ def train_seghead(segmodel: Modelsegmodel,
     # Freeze backbone should be done in model initialization
     segmodel.seg_model.to(device)
 
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last= False)
     opt = torch.optim.AdamW(segmodel.seg_model.parameters(), lr=lr)
     
     #~~~~~~~ weighted l1 loss ~~~~~~~~#
