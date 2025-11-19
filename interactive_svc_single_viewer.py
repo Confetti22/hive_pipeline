@@ -821,16 +821,26 @@ def eval_full_roi(segmodel: Modelsegmodel,
 
                     # blend crop shape may be smaller on right/bottom edges
                     bh, bw = probs.shape[1:]
-                    weight = blend[:bh, :bw]
+                    tile_h = y1 - y0
+                    tile_w = x1 - x0
+                    use_h = min(tile_h, bh)
+                    use_w = min(tile_w, bw)
 
-                    prob_acc[:, y0:y1, x0:x1] += probs[:, :bh, :bw] * weight
-                    weight_acc[y0:y1, x0:x1] += weight
+                    weight = blend[:use_h, :use_w]
+
+                    prob_acc[:, y0:y0+use_h, x0:x0+use_w] += probs[:, :use_h, :use_w] * weight
+                    weight_acc[y0:y0+use_h, x0:x0+use_w] += weight
 
                     if capture_features:
                         f = segmodel.seg_model.get_feature_map()
-                        if fvol is None:
-                            fvol = np.zeros((H, W, f.shape[-1]), dtype=f.dtype)
-                        fvol[y0:y1, x0:x1] = f[:bh, :bw]
+                        f = f.squeeze(0)  # [1,H,W,C] -> [H,W,C]
+                        if f is not None:
+                            fh, fw = f.shape[:2]
+                            feat_h = min(use_h, fh)
+                            feat_w = min(use_w, fw)
+                            if fvol is None:
+                                fvol = np.zeros((H, W, f.shape[-1]), dtype=f.dtype)
+                            fvol[y0:y0+feat_h, x0:x0+feat_w] = f[:feat_h, :feat_w]
 
             # normalize probs
             prob_acc /= weight_acc[None, :, :]
@@ -878,16 +888,28 @@ def eval_full_roi(segmodel: Modelsegmodel,
                             probs = denoise_tv_chambolle(probs, weight=tv_denoise_weight, channel_axis=0)
 
                         bd, bh, bw = probs.shape
-                        weight = blend[:bd, :bh, :bw]
+                        tile_d = z1 - z0
+                        tile_h = y1 - y0
+                        tile_w = x1 - x0
+                        use_d = min(tile_d, bd)
+                        use_h = min(tile_h, bh)
+                        use_w = min(tile_w, bw)
 
-                        prob_acc[:, z0:z1, y0:y1, x0:x1] += probs * weight
-                        weight_acc[z0:z1, y0:y1, x0:x1] += weight
+                        weight = blend[:use_d, :use_h, :use_w]
+
+                        prob_acc[:, z0:z0+use_d, y0:y0+use_h, x0:x0+use_w] += probs[:, :use_d, :use_h, :use_w] * weight
+                        weight_acc[z0:z0+use_d, y0:y0+use_h, x0:x0+use_w] += weight
 
                         if capture_features:
                             f = segmodel.seg_model.get_feature_map()
-                            if fvol is None:
-                                fvol = np.zeros((D, H, W, f.shape[-1]), dtype=f.dtype)
-                            fvol[z0:z1, y0:y1, x0:x1] = f[:bd, :bh, :bw]
+                            if f is not None:
+                                fd, fh, fw = f.shape[:3]
+                                feat_d = min(use_d, fd)
+                                feat_h = min(use_h, fh)
+                                feat_w = min(use_w, fw)
+                                if fvol is None:
+                                    fvol = np.zeros((D, H, W, f.shape[-1]), dtype=f.dtype)
+                                fvol[z0:z0+feat_d, y0:y0+feat_h, x0:x0+feat_w] = f[:feat_d, :feat_h, :feat_w]
 
             prob_acc /= weight_acc[None, :, :, :]
             pred = np.argmax(prob_acc, axis=0) + 1
