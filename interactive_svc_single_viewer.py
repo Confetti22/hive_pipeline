@@ -604,6 +604,7 @@ def train_seghead(segmodel: Modelsegmodel,
     # Freeze backbone should be done in model initialization
     segmodel.seg_model.to(device)
 
+    #drop_last False to ensure nonempty loader when  len(ds) ==1 (this is true when input img and train_roi is the same) 
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last= False)
     opt = torch.optim.AdamW(segmodel.seg_model.parameters(), lr=lr)
     
@@ -659,145 +660,241 @@ def train_seghead(segmodel: Modelsegmodel,
             print(f"epoch:{n_epoch}:train_loss: {total_loss.item():.4f}  "
                     f"(ce={ce_loss.item():.4f}, dice={dice_loss.item():.4f})")
 
+
+
+
+
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+from skimage.restoration import denoise_tv_chambolle
+from collections import defaultdict
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+from skimage.restoration import denoise_tv_chambolle
+from collections import defaultdict
+from typing import Dict, Any, Tuple, Optional
+
+def _make_blend_weight_2d(h, w):
+    y = np.linspace(-1, 1, h)[:, None]
+    x = np.linspace(-1, 1, w)[None, :]
+    dist = np.sqrt(x*x + y*y)
+    weight = 1 - (dist / np.max(dist))
+    weight = np.clip(weight, 0.0, 1.0)
+    return weight.astype(np.float32)
+
+
+def _make_blend_weight_3d(d, h, w):
+    z = np.linspace(-1, 1, d)[:, None, None]
+    y = np.linspace(-1, 1, h)[None, :, None]
+    x = np.linspace(-1, 1, w)[None, None, :]
+    dist = np.sqrt(x*x + y*y + z*z)
+    weight = 1 - (dist / np.max(dist))
+    return np.clip(weight, 0.0, 1.0).astype(np.float32)
+
+
+def _forward_3d(segmodel, x, n_classes):
+    """Supports your DPT '2D slicing' behavior."""
+    if segmodel.name == "DPT" and x.dim() == 5:
+        B, C, D, H, W = x.shape
+        x2d = x.permute(0,2,1,3,4).reshape(B*D, C, H, W)
+        logits2d = segmodel.seg_model(x2d)
+        return logits2d.reshape(B, D, n_classes, H, W).permute(0,2,1,3,4)
+    else:
+        return segmodel.seg_model(x)
+
+def _run_single_2d(segmodel, image, device, capture_features, tv_weight):
+    """
+    Run full-image 2D inference, exactly reproducing the logic from your
+    original eval_full_roi() 2D no-tile branch.
+    """
+    x = _ensure_tensor_chw_or_cdhw(image, dims=2, model_name=segmodel.name).to(device)
+
+    logits = segmodel.seg_model(x).squeeze(0)  # [C,H,W]
+    probs = F.softmax(logits, dim=0).cpu().numpy()
+
+    # optional TV denoise
+    if tv_weight > 0:
+        probs = denoise_tv_chambolle(probs, weight=tv_weight, channel_axis=0)
+
+    pred = np.argmax(probs, axis=0) + 1
+
+    # features before segmentation head
+    fvol = segmodel.seg_model.get_feature_map() if capture_features else None
+
+    return pred, fvol
+
+def _run_single_3d(segmodel, image, device, capture_features, tv_weight):
+    """
+    Run full-image 3D inference, preserving DPT slicing and original logic.
+    """
+    dims = 3
+    n_classes = segmodel.n_classes
+
+    x = _ensure_tensor_chw_or_cdhw(image, dims=3, model_name=segmodel.name).to(device)
+
+    # ---- DPT special 3D→2D path ----
+    if segmodel.name == "DPT" and x.dim() == 5:
+        B, C, D, H, W = x.shape
+        x2d = x.permute(0, 2, 1, 3, 4).reshape(B * D, C, H, W)
+        logits2d = segmodel.seg_model(x2d)  # [BD, C', H, W]
+        logits = logits2d.reshape(B, D, n_classes, H, W).permute(0, 2, 1, 3, 4)
+    else:
+        logits = segmodel.seg_model(x)  # [B,C,D,H,W] or [1,C,D,H,W]
+
+    probs = F.softmax(logits, dim=1).cpu().numpy()  # [B,C,D,H,W]
+
+    if tv_weight > 0:
+        probs = denoise_tv_chambolle(probs, weight=tv_weight, channel_axis=1)
+
+    pred = np.argmax(probs, axis=1) + 1
+    pred = np.squeeze(pred)  # remove batch dim
+
+    fvol = segmodel.seg_model.get_feature_map() if capture_features else None
+
+    return pred, fvol
+
 def eval_full_roi(segmodel: Modelsegmodel,
                    image: np.ndarray,
                    device: str = "cuda",
                    tile: Optional[Tuple[int, ...]] = None,
                    capture_features: bool = True,
                    tv_denoise_weight : float = 0.1,
+                   overlap: float = 0.25,      # <-- new
                    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
-    """Evaluate the full ROI, tiling as needed.
 
-    Args:
-        segmodel: trained Modelsegmodel
-        image: numpy (H,W) or (D,H,W)
-        device: torch device
-        tile: optional tile size (h,w) or (d,h,w)
-        capture_features: whether to return a feature volume (pre-seghead)
-    Returns:
-        (pred_labels, feature_volume or None)
     """
+    Evaluate full ROI using *overlapped tiles* and *weighted blending* to
+    remove border artifacts.
+
+    overlap: fraction of tile size to overlap (0.0–0.5 recommended)
+    """
+
     dims = segmodel.dims
     n_classes = segmodel.n_classes
-    
-    # The above line is brittle; better to pass n_classes in real code.
-    
-    print(f"eval with tv_denoise weight {tv_denoise_weight}")
+
+    print(f"eval with tv_denoise weight {tv_denoise_weight}, overlap {overlap}")
+
     with torch.no_grad():
+
+        # ----------------------
+        # 2D BRANCH
+        # ----------------------
         if dims == 2:
-            H, W = image.shape[:dims]
+            H, W = image.shape[:2]
             ph, pw = tile
-            if ph == H and pw == W or ph > H or pw >W: 
-                x = _ensure_tensor_chw_or_cdhw(image, dims=2,model_name=segmodel.name).to(device)
-                logits = segmodel.seg_model(x).squeeze(0) #C*H*W
-                probs = F.softmax(logits,dim=0).detach().cpu().numpy()
 
-                if tv_denoise_weight == 0: 
-                    pred = np.argmax(probs, axis=0 ) + 1 #C*H*W
-                else:
-                    denoised_probs = denoise_tv_chambolle(probs, weight=tv_denoise_weight, channel_axis=0)
-                    pred = np.argmax(denoised_probs, axis=0) +1
+            if ph >= H and pw >= W:
+                # == fallback to your original full inference ==
+                return _run_single_2d(segmodel, image, device, capture_features, tv_denoise_weight)
 
-                fvol = segmodel.seg_model.get_feature_map()  if capture_features else None  # [H,W,C]
-                return pred, fvol
-            else:
-                pred = np.zeros((H, W), dtype=np.int32)
-                fvol = None
-                for y0 in range(0, H, ph):
-                    for x0 in range(0, W, pw):
-                        y1 = min(H, y0 + ph)
-                        x1 = min(W, x0 + pw)
-                        tile_img = image[y0:y1, x0:x1]
-                        x = _ensure_tensor_chw_or_cdhw(tile_img, 2,model_name=segmodel.name).to(device)
-                        logits = segmodel.seg_model(x).squeeze(0) #C*H*W
-                        probs = F.softmax(logits,dim=0).detach().cpu().numpy()
+            # compute overlap pixels
+            oh = int(ph * overlap)
+            ow = int(pw * overlap)
 
-                        if tv_denoise_weight == 0: 
-                            pred_tile = np.argmax(probs, axis=0 ) + 1 #C*H*W
-                        else:
-                            denoised_probs = denoise_tv_chambolle(probs, weight=tv_denoise_weight, channel_axis=0)
-                            pred_tile = np.argmax(denoised_probs, axis=0) +1
-
-                        pred_tile = np.argmax(probs, axis=0 ) + 1 #C*H*W 
-                        pred[y0:y1, x0:x1] = pred_tile
-
-                        if capture_features:
-                            f = segmodel.seg_model.get_feature_map() #B,H,W,C
-                            if fvol is None:
-                                fvol = np.zeros(( H, W,f.shape[-1]), dtype=f.dtype)
-                            fvol[ y0:y1, x0:x1,:] = f
-                return pred, fvol
-        else: # 3d input branch
-            D,H, W = image.shape[:dims]
-            pd,ph,pw= tile
-            pred = np.zeros((D, H, W), dtype=np.int32)
+            # accumulation buffers
+            prob_acc = np.zeros((n_classes, H, W), dtype=np.float32)
+            weight_acc = np.zeros((H, W), dtype=np.float32)
             fvol = None
 
+            # generate blending weight map (soft in center)
+            blend = _make_blend_weight_2d(ph, pw)
 
-            if (pd ==D and ph == H and pw == W) or (pd > D) or (ph > H) or (pw > W): 
-                # No tiling requested; run a single forward pass
-                x = _ensure_tensor_chw_or_cdhw(image, 3, model_name=segmodel.name).to(device)
+            for y0 in range(0, H, ph - oh):
+                for x0 in range(0, W, pw - ow):
 
-                if segmodel.name =="DPT" and x.dim() ==5:
-                    # slice 3D into 2D batches externally
-                    B, C, D, H, W = x.shape
-                    x2d = x.permute(0, 2, 1, 3, 4).reshape(B * D, C, H, W)
-                    logits2d = segmodel.seg_model(x2d)  # [B*D, C', H, W]
-                    logits = logits2d.reshape(B, D, n_classes, H, W).permute(0, 2, 1, 3, 4)  #[B, C',D, H, W] 
-                else:
-                    logits = segmodel.seg_model(x) #[B,C,D,H,W]
+                    y1 = min(H, y0 + ph)
+                    x1 = min(W, x0 + pw)
 
-                probs = F.softmax(logits, dim=1).detach().cpu().numpy() #[B,C,D,H,W]
+                    tile_img = image[y0:y1, x0:x1]
+                    x = _ensure_tensor_chw_or_cdhw(tile_img, 2, segmodel.name).to(device)
 
-                if tv_denoise_weight == 0: 
-                    pred = np.argmax(probs, axis=1 ) + 1 #[B,C,D,H,W]
-                else:
-                    denoised_probs = denoise_tv_chambolle(probs, weight=tv_denoise_weight, channel_axis=1) #[B,C,D,H,W]
-                    pred = np.argmax(denoised_probs, axis=1) +1  #[B,C,D,H,W]
-                
-                pred = np.squeeze(pred) #B equals to 1
+                    logits = segmodel.seg_model(x).squeeze(0)
+                    probs = F.softmax(logits, dim=0).cpu().numpy()
 
-                fvol = segmodel.seg_model.get_feature_map()  if capture_features else None  # [B*D,H,W,C] here, B=1
+                    # optional TV denoising
+                    if tv_denoise_weight > 0:
+                        probs = denoise_tv_chambolle(probs, weight=tv_denoise_weight, channel_axis=0)
 
-            else:
-                # Tiled inference in 3D: tile = (pd, ph, pw)
-                pred = np.zeros((D, H, W), dtype=np.int32)
-                fvol = None
+                    # blend crop shape may be smaller on right/bottom edges
+                    bh, bw = probs.shape[1:]
+                    weight = blend[:bh, :bw]
 
-                for z0 in range(0, D, pd):
-                    for y0 in range(0, H, ph):
-                        for x0 in range(0, W, pw):
-                            z1 = min(D, z0 + pd)
-                            y1 = min(H, y0 + ph)
-                            x1 = min(W, x0 + pw)
+                    prob_acc[:, y0:y1, x0:x1] += probs[:, :bh, :bw] * weight
+                    weight_acc[y0:y1, x0:x1] += weight
 
-                            tile_img = image[z0:z1, y0:y1, x0:x1]  # [d, h, w] (float/uint)
-                            # to tensor [C, D, H, W] and add batch -> [1, C, D, H, W]
-                            x = _ensure_tensor_chw_or_cdhw(tile_img, 3, model_name=segmodel.name).to(device)
-                            
-                            if segmodel.name =="DPT" and x.dim() ==5:
-                                # slice 3D into 2D batches externally
-                                B, C, D, H, W = x.shape
-                                x2d = x.permute(0, 2, 1, 3, 4).reshape(B * D, C, H, W)
-                                logits2d = segmodel.seg_model(x2d)  # [B*D, C', H, W]
-                                logits = logits2d.reshape(B, D, n_classes, H, W).permute(0, 2, 1, 3, 4)  #[B, C',D, H, W] 
-                            else:
-                                logits = segmodel.seg_model(x) #[B,C,H,W]
-                                                
-                            probs = F.softmax(logits, dim=1).detach().cpu().numpy()
-                            pred_tile = np.argmax(probs, axis=1) +1 #[B,C,H,W]
-                            pred_tile = np.squeeze(pred_tile) #B equals to 1
-                            pred[z0:z1,y0:y1, x0:x1] = pred_tile 
+                    if capture_features:
+                        f = segmodel.seg_model.get_feature_map()
+                        if fvol is None:
+                            fvol = np.zeros((H, W, f.shape[-1]), dtype=f.dtype)
+                        fvol[y0:y1, x0:x1] = f[:bh, :bw]
 
-                            if capture_features:
-                                f = segmodel.seg_model.get_feature_map() #B*D,H,W,C  (here B equals to 1)
-                                if fvol is None:
-                                    fvol = np.zeros((D, H, W, f.shape[-1]), dtype=f.dtype)
-                                fvol[z0:z1, y0:y1, x0:x1, :] = f
-  
+            # normalize probs
+            prob_acc /= weight_acc[None, :, :]
+            pred = np.argmax(prob_acc, axis=0) + 1
+
             return pred, fvol
 
-# ----------------------------------
+        # ----------------------
+        # 3D BRANCH
+        # ----------------------
+        else:
+            D, H, W = image.shape[:3]
+            pd, ph, pw = tile
+
+            if pd >= D and ph >= H and pw >= W:
+                return _run_single_3d(segmodel, image, device, capture_features, tv_denoise_weight)
+
+            od = int(pd * overlap)
+            oh = int(ph * overlap)
+            ow = int(pw * overlap)
+
+            prob_acc = np.zeros((n_classes, D, H, W), dtype=np.float32)
+            weight_acc = np.zeros((D, H, W), dtype=np.float32)
+            fvol = None
+
+            blend = _make_blend_weight_3d(pd, ph, pw)
+
+            for z0 in range(0, D, pd - od):
+                for y0 in range(0, H, ph - oh):
+                    for x0 in range(0, W, pw - ow):
+
+                        z1 = min(D, z0 + pd)
+                        y1 = min(H, y0 + ph)
+                        x1 = min(W, x0 + pw)
+
+                        tile_img = image[z0:z1, y0:y1, x0:x1]
+                        x = _ensure_tensor_chw_or_cdhw(tile_img, 3, segmodel.name).to(device)
+
+                        # DPT-like slicing handling
+                        logits = _forward_3d(segmodel, x, n_classes)
+
+                        probs = F.softmax(logits, 1).cpu().numpy()[0]
+
+                        if tv_denoise_weight > 0:
+                            probs = denoise_tv_chambolle(probs, weight=tv_denoise_weight, channel_axis=0)
+
+                        bd, bh, bw = probs.shape
+                        weight = blend[:bd, :bh, :bw]
+
+                        prob_acc[:, z0:z1, y0:y1, x0:x1] += probs * weight
+                        weight_acc[z0:z1, y0:y1, x0:x1] += weight
+
+                        if capture_features:
+                            f = segmodel.seg_model.get_feature_map()
+                            if fvol is None:
+                                fvol = np.zeros((D, H, W, f.shape[-1]), dtype=f.dtype)
+                            fvol[z0:z1, y0:y1, x0:x1] = f[:bd, :bh, :bw]
+
+            prob_acc /= weight_acc[None, :, :, :]
+            pred = np.argmax(prob_acc, axis=0) + 1
+
+            return pred, fvol
+
+
 # Similarity / NCC utilities
 # ----------------------------------
 def cosine_similarity_map(anchor: np.ndarray, feat: np.ndarray) -> np.ndarray:
@@ -933,7 +1030,7 @@ def add_ui(viewer: napari.Viewer) -> None:
         patch_w={"widget_type": "LineEdit"},
     )
     def train_widget(epochs: int = 2, batch_size: int = 16, lr: float = 1e-4,
-                     patch_h: int =1536 , patch_w: int = 1536,
+                     patch_h: int =512, patch_w: int = 512,
                      patch_d: int = 1):
         """Train lightweight seghead from sparse labels.
 
@@ -1025,6 +1122,7 @@ def add_ui(viewer: napari.Viewer) -> None:
         # pred[pred==1] = 0 #set backgound(1) to 0 to do not display
         state["pred"], state["feat"] = pred, feat
         state['offset'] = offset 
+        print(f"eval done, pred shape: {pred.shape}, feat shape: {feat.shape if feat is not None else None}, offset: {offset}")
 
         # tsne_plot(feat,state["labels"])
 
@@ -1054,7 +1152,7 @@ def add_ui(viewer: napari.Viewer) -> None:
             viewer.add_image(rgb, name="feat_rgb", rgb=True, blending="additive",translate=translation)
 
         # create/update PCA-RGB layer immediately if possible
-        # _ensure_feat_rgb_layer()
+        _ensure_feat_rgb_layer()
 
 
    # shared widget config (note: you wrote "tw_", assuming you meant "tv_")
@@ -1070,7 +1168,7 @@ def add_ui(viewer: napari.Viewer) -> None:
         call_button="eval SegHead",
         **COMMON_WIDGETS
     )
-    def eval_widget(tile_h: int = 1536, tile_w: int = 1536, tile_d: int = 1,
+    def eval_widget(tile_h: int = 512, tile_w: int = 512, tile_d: int = 1,
                    tv_denoise_weight : float = 0.1,
                     capture_features: bool = False):
         tile_d = int(tile_d)

@@ -176,7 +176,7 @@ class DPT(nn.Module):
         )
         #extract the feature for visualization
         if not self.training:
-            self.feature_map = self.compute_feature_map(features, patch_h, patch_w)
+            self.feature_map = self.compute_feature_map_pca(features, patch_h, patch_w)
 
         out = self.head(features, patch_h, patch_w)
         out = F.interpolate(out, (patch_h * 16, patch_w * 16), mode='bilinear', align_corners=True)
