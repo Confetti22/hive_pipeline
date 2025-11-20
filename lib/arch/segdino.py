@@ -285,6 +285,8 @@ class DPT(nn.Module):
             align_corners=True,
         )  # (B, C, 16*H, 16*W)
         up = up.permute(0, 2, 3, 1).contiguous().cpu().numpy()  # (B, 16*H, 16*W, C)
+        # remove trivial B dim
+        up = np.squeeze(up)
 
         return up
 

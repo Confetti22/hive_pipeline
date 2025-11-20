@@ -52,6 +52,7 @@ import napari
 from magicgui import magicgui
 from qtpy.QtWidgets import QMessageBox
 from confettii.plot_helper import three_pca_as_rgb_image
+from confettii.grah_cut import n_cut
 
 # ----------------------------------
 # Project bootstrap (repo root import)
@@ -70,6 +71,8 @@ from config.load_config import load_cfg
 # ----------------------------------
 # Dataset & utilities
 # ----------------------------------
+
+from typing import Optional, Tuple, Dict, Any
 
 from lib.utils.preprocess_img import  preprocess_uint16_for_imagenet, preprocess_uint8rgb_for_imagenet
 
@@ -102,6 +105,27 @@ def load_3d_rm009():
     vol = np.squeeze(vol)
     return vol
 
+def get_path_map():
+    path_map ={}
+    path_map['visa'] = {
+        'roi': "visa_1536_1536_12.tif",
+        'label': None,
+        'mask': None,
+    }
+    path_map['hp'] = {
+        'roi': "hp_1536_1536_12.tif",
+        'label': None,
+        'mask': None,
+    }
+
+    path_map['7N'] = {
+        'roi': "vii_1536_1536_83.tif",
+        'label': None,
+        'mask': None,
+    }
+
+    return path_map
+
 def load_t1779():
 
     # mask_vol = tif.imread("/home/confetti/data/t1779/register_data_roi/cp_mask_reduced.tif") 
@@ -109,22 +133,92 @@ def load_t1779():
     # eroded_mask = erode_labels(mask,width=70)
     # relabelled_mask,mappings = relabel_sequential(eroded_mask)
 
-    roi_vol = tif.imread("/home/confetti/data/t1779/scenes/ssp_1536_1536_12.tif")
-    roi_label = tif.imread("/home/confetti/data/t1779/scenes/hp_label_1536_1536.tif")
+    region_key = 'hp'
 
-    roi = np.max(roi_vol[3:9],axis=0)  # max proj to 2d
+    path_map = get_path_map()
+
+    parent_dir = '/home/confetti/data/t1779/scenes'
+    roi_path = f"{parent_dir}/{path_map[region_key]['roi']}"
+    label_path = f"{parent_dir}/{path_map[region_key]['label']}"
+    mask_path = f"{parent_dir}/{path_map[region_key]['mask']}"
+
+    roi_vol = tif.imread(roi_path)
+    roi = np.max(roi_vol,axis=0)  # max proj to 2d
     roi = np.squeeze(roi)
-    roi_label = np.squeeze(roi_label)
     assert len(roi.shape) ==2
+    
+    label = tif.imread(label_path) if path_map[region_key]['label'] is not None else  None
+    label = np.squeeze(label) if label is not None else None
+    mask = tif.imread(mask_path) if path_map[region_key]['mask'] is not None else None
+    mask = np.squeeze(mask) if mask is not None else None   
 
-    return roi , roi_label
+    return roi , label,mask
 
-# ----------------------------------
-# Backbones (project-specific stubs)
-# ----------------------------------
 
-import numpy as np
-from typing import Optional, Tuple, Dict, Any
+
+
+def pca_fvol_to_rgb_gpu(feats_list, final_image_shape, device="cuda"):
+    """
+    GPU-accelerated PCA on fvol flattened features.
+    
+    Input:
+        feats_list: (N, C) np.ndarray
+        final_image_shape: tuple -> reshaped into (*shape, 3)
+
+    Output:
+        rgb_vis: (*final_image_shape, 3) normalized to [0,1]
+    """
+
+    N, C = feats_list.shape
+
+    # If channels <= 3: reshape directly
+    if C <= 3:
+        rgb = torch.from_numpy(feats_list).to(device=device, dtype=torch.float32)
+        rgb = rgb.reshape(*final_image_shape, C)
+        rgb = rgb - rgb.min()
+        if rgb.max() > 0:
+            rgb = rgb / rgb.max()
+        return rgb.cpu().numpy()
+
+    # ---------------------------------------------------------
+    # 1. Move to GPU
+    # ---------------------------------------------------------
+    X = torch.from_numpy(feats_list).to(device=device, dtype=torch.float32)  # [N, C]
+
+    # ---------------------------------------------------------
+    # 2. Center the data
+    # ---------------------------------------------------------
+    mean = X.mean(dim=0, keepdim=True)
+    Xc = X - mean  # [N, C]
+
+    # ---------------------------------------------------------
+    # 3. SVD decomposition (Xc = U S Vh)
+    #     Vh.shape = (C, C), top 3 PCs = Vh[:3]
+    # ---------------------------------------------------------
+    # Unlike CPU PCA, torch.linalg.svd is already optimized & GPU-friendly.
+    U, S, Vh = torch.linalg.svd(Xc, full_matrices=False)
+
+    # PCs = Xc @ Vh[:3].T → yields (N, 3)
+    PCs = Xc @ Vh[:3].T   # [N, 3]
+
+    # ---------------------------------------------------------
+    # 4. Normalize result to 0–1
+    # ---------------------------------------------------------
+    pcs_min = PCs.min(dim=0).values
+    pcs_max = PCs.max(dim=0).values
+    denom = (pcs_max - pcs_min).clamp(min=1e-8)
+    PCs_norm = (PCs - pcs_min) / denom  # [N, 3]
+
+    # ---------------------------------------------------------
+    # 5. Reshape to final image shape
+    # ---------------------------------------------------------
+    rgb_vis = PCs_norm.reshape(*final_image_shape, 3)
+
+    # Bring back to CPU as numpy
+    return rgb_vis.cpu().numpy()
+
+
+
 
 def tsne_plot(feats,labels):
 
@@ -852,16 +946,8 @@ def eval_full_roi(
 
                     # ---- feature maps with same blending ----
                     if capture_features:
-                        f = segmodel.seg_model.get_feature_map()  # could be [H,W,C] or [B,H,W,C]
+                        f_tile = segmodel.seg_model.get_feature_map()  # could be [H,W,C] or [B,H,W,C]
 
-                        # normalize to [h,w,C]
-                        if f.ndim == 4:
-                            # assume [B,H,W,C]
-                            f_tile = f[0]  # [H,W,C]
-                        elif f.ndim == 3:
-                            f_tile = f      # [H,W,C]
-                        else:
-                            raise ValueError(f"Unexpected feature map shape {f.shape}")
 
                         fh, fw, fc = f_tile.shape
                         fh_eff = min(fh, w_h)
@@ -889,12 +975,123 @@ def eval_full_roi(
             return pred, fvol
 
         # --------------------
-        # 3D BRANCH (unchanged from your last version, but we can also
-        #           update it similarly if you want)
+        # 3D BRANCH
         # --------------------
         else:
-            # keep your 3D implementation or we can mirror the same blending logic
-            return _run_single_3d(segmodel, image, device, capture_features, tv_denoise_weight)
+            D, H, W = image.shape[:3]
+            if tile is None:
+                raise ValueError("tile must be provided for overlapped tiling")
+            pd, ph, pw = tile
+
+            if pd >= D and ph >= H and pw >= W:
+                return _run_single_3d(segmodel, image, device, capture_features, tv_denoise_weight)
+
+            od = int(pd * overlap)
+            oh = int(ph * overlap)
+            ow = int(pw * overlap)
+
+            step_d = max(1, pd - od)
+            step_h = max(1, ph - oh)
+            step_w = max(1, pw - ow)
+
+            prob_acc = np.zeros((n_classes, D, H, W), dtype=np.float32)
+            weight_acc = np.zeros((D, H, W), dtype=np.float32)
+            fvol = None
+            fweight = None
+
+            blend = _make_blend_weight_3d(pd, ph, pw)
+
+            for z0 in range(0, D, step_d):
+                for y0 in range(0, H, step_h):
+                    for x0 in range(0, W, step_w):
+                        z1 = min(D, z0 + pd)
+                        y1 = min(H, y0 + ph)
+                        x1 = min(W, x0 + pw)
+
+                        tile_img = image[z0:z1, y0:y1, x0:x1]
+
+                        dz_pad = max(0, pd - tile_img.shape[0])
+                        dy_pad = max(0, ph - tile_img.shape[1])
+                        dx_pad = max(0, pw - tile_img.shape[2])
+                        if dz_pad > 0 or dy_pad > 0 or dx_pad > 0:
+                            if tile_img.ndim == 3:
+                                pad_spec = ((0, dz_pad), (0, dy_pad), (0, dx_pad))
+                            elif tile_img.ndim == 4:
+                                pad_spec = ((0, dz_pad), (0, dy_pad), (0, dx_pad), (0, 0))
+                            else:
+                                raise ValueError(f"Unexpected tile ndim {tile_img.ndim}")
+                            pad_mode = "reflect"
+                            if (
+                                (tile_img.shape[0] == 1 and dz_pad > 0)
+                                or (tile_img.shape[1] == 1 and dy_pad > 0)
+                                or (tile_img.shape[2] == 1 and dx_pad > 0)
+                            ):
+                                pad_mode = "edge"
+                            tile_img = np.pad(tile_img, pad_spec, mode=pad_mode)
+
+                        x = _ensure_tensor_chw_or_cdhw(tile_img, 3, model_name=segmodel.name).to(device)
+
+                        if segmodel.name == "DPT" and x.dim() == 5:
+                            B, C, Dt, Ht, Wt = x.shape
+                            x2d = x.permute(0, 2, 1, 3, 4).reshape(B * Dt, C, Ht, Wt)
+                            logits2d = segmodel.seg_model(x2d)
+                            logits = logits2d.reshape(B, Dt, n_classes, Ht, Wt).permute(0, 2, 1, 3, 4)
+                        else:
+                            logits = segmodel.seg_model(x)
+
+                        probs = F.softmax(logits, dim=1).detach().cpu().numpy()
+                        probs = np.squeeze(probs, axis=0)  # [C, d, h, w]
+
+                        td, th, tw = probs.shape[1:]
+                        w_d = min(td, blend.shape[0], z1 - z0)
+                        w_h = min(th, blend.shape[1], y1 - y0)
+                        w_w = min(tw, blend.shape[2], x1 - x0)
+                        weight = blend[:w_d, :w_h, :w_w]
+
+                        prob_slice = probs[:, :w_d, :w_h, :w_w]
+                        if tv_denoise_weight > 0:
+                            prob_slice = denoise_tv_chambolle(
+                                prob_slice, weight=tv_denoise_weight, channel_axis=0
+                            )
+
+                        prob_acc[:, z0:z0+w_d, y0:y0+w_h, x0:x0+w_w] += prob_slice * weight[None, :, :, :]
+                        weight_acc[z0:z0+w_d, y0:y0+w_h, x0:x0+w_w] += weight
+
+                        if capture_features:
+                            f = segmodel.seg_model.get_feature_map()
+                            if f is None:
+                                continue
+                            if f.ndim == 5:
+                                f_tile = f[0]
+                            elif f.ndim == 4:
+                                f_tile = f
+                            else:
+                                raise ValueError(f"Unexpected feature map shape {f.shape}")
+
+                            fd, fh, fw, fc = f_tile.shape
+                            fd_eff = min(fd, w_d)
+                            fh_eff = min(fh, w_h)
+                            fw_eff = min(fw, w_w)
+
+                            if fvol is None:
+                                fvol = np.zeros((D, H, W, fc), dtype=np.float32)
+                                fweight = np.zeros((D, H, W), dtype=np.float32)
+
+                            weight_slice = weight[:fd_eff, :fh_eff, :fw_eff]
+                            fvol[z0:z0+fd_eff, y0:y0+fh_eff, x0:x0+fw_eff, :] += (
+                                f_tile[:fd_eff, :fh_eff, :fw_eff, :] * weight_slice[..., None]
+                            )
+                            fweight[z0:z0+fd_eff, y0:y0+fh_eff, x0:x0+fw_eff] += weight_slice
+
+            prob_acc /= weight_acc[None, :, :, :]
+            pred = np.argmax(prob_acc, axis=0) + 1
+
+            if capture_features and fvol is not None:
+                fvol /= fweight[..., None]
+            else:
+                fvol = None
+
+            return pred, fvol
 
 
 # Similarity / NCC utilities
@@ -986,15 +1183,16 @@ def add_ui(viewer: napari.Viewer) -> None:
 
     # roi = load_3d_rm009()
     # roi = load_DKROI() 
-    roi, label = load_t1779()
+    roi, label,mask = load_t1779()
     roi_shape = roi.shape[:state["dims"]]
 
     state["roi"] = roi
-    # state["labels"] = np.zeros(roi_shape,dtype=np.uint8) 
-    state["labels"] = label 
+    state["labels"] = label if label is not None else np.zeros(roi_shape,dtype=np.uint8)
+    state["mask"] =  mask if mask is not None else np.ones(roi_shape,dtype=bool)
 
     viewer.add_image(state["roi"], name="roi")
     viewer.add_labels(state["labels"], name="user_labels")
+    viewer.add_labels(state["mask"], name="mask",opacity=0.3)
 
     state['layers'] = viewer.layers
     
@@ -1031,8 +1229,8 @@ def add_ui(viewer: napari.Viewer) -> None:
         patch_h={"widget_type": "LineEdit"},
         patch_w={"widget_type": "LineEdit"},
     )
-    def train_widget(epochs: int = 2, batch_size: int = 16, lr: float = 1e-4,
-                     patch_h: int =512, patch_w: int = 512,
+    def train_widget(epochs: int = 50, batch_size: int = 16, lr: float = 1e-4,
+                     patch_h: int =1536 , patch_w: int = 1536,
                      patch_d: int = 1):
         """Train lightweight seghead from sparse labels.
 
@@ -1101,6 +1299,7 @@ def add_ui(viewer: napari.Viewer) -> None:
         if bbox is None:
             pred, feat = eval_full_roi(segmodel, roi, device, tile=tile, capture_features=capture_features,tv_denoise_weight=tv_denoise_weight)
             offset = (0,0) if dims ==2 else (0,0,0) #z,y,x
+            state['final_roi'] = roi
 
         else:
             roi_spatial_shape = roi.shape[:dims]
@@ -1111,6 +1310,8 @@ def add_ui(viewer: napari.Viewer) -> None:
             padded_roi_win = pad_to_multiple(roi_win,16, dims=dims)
 
             pred_win, feat_win = eval_full_roi(segmodel, padded_roi_win,device, tile=tile, capture_features=capture_features, tv_denoise_weight=tv_denoise_weight)
+            state['final_roi'] = padded_roi_win 
+
             if dims == 3:
                 pred_win = pred_win[:,:y1-y0,:x1-x0] #D,H,W
                 feat_win = feat_win[:,:y1-y0,:x1-x0]   if capture_features else None
@@ -1142,19 +1343,97 @@ def add_ui(viewer: napari.Viewer) -> None:
                 _ask(viewer, "PCA-RGB", "Capture features first (Evaluate with capture_features=True).")
                 return
 
+            mask = state.get("mask", None)
+            translation = state.get("offset", (0, 0, 0))
+
             if state["dims"] == 2:
                 H, W, C = feat.shape
-                rgb = three_pca_as_rgb_image(feat.reshape(-1, C), (H, W),gpu=True)
+                spatial_shape = (H, W)
             else:
                 D, H, W, C = feat.shape
-                rgb = three_pca_as_rgb_image(feat.reshape(-1, C), (D, H, W),gpu=True)
+                spatial_shape = (D, H, W)
+
+            mask_bool = None
+            if mask is not None:
+                mask_view = np.asarray(mask)
+                if mask_view.shape != spatial_shape:
+                    try:
+                        slices = tuple(
+                            slice(int(translation[i]), int(translation[i]) + spatial_shape[i])
+                            for i in range(len(spatial_shape))
+                        )
+                        mask_view = mask_view[slices]
+                    except Exception:
+                        mask_view = None
+                if mask_view is not None and mask_view.shape == spatial_shape:
+                    mask_bool = mask_view.astype(bool)
+
+            flat_feat = feat.reshape(-1, C)
+            if mask_bool is None:
+                rgb = pca_fvol_to_rgb_gpu(flat_feat, spatial_shape)
+            else:
+                mask_flat = mask_bool.reshape(-1)
+                rgb_flat = np.zeros((mask_flat.size, 3), dtype=np.float32)
+                if mask_flat.any():
+                    masked_rgb = pca_fvol_to_rgb_gpu(flat_feat[mask_flat], (int(mask_flat.sum()),))
+                    rgb_flat[mask_flat] = masked_rgb.reshape(-1, 3)
+                rgb = rgb_flat.reshape(*spatial_shape, 3)
 
             if "feat_rgb" in viewer.layers:
                 del viewer.layers["feat_rgb"]
             viewer.add_image(rgb, name="feat_rgb", rgb=True, blending="additive",translate=translation)
+        
+        def _ncut():
+            feat = state.get("feat", None)
+            translation = state['offset'] 
+            mask = state.get("mask", None)
+
+            if feat is None:
+                _ask(viewer, "NCut", "Capture features first (Evaluate with capture_features=True).")
+                return
+
+            mask_bool = None
+            if mask is not None:
+                mask_view = np.asarray(mask)
+                spatial_shape = feat.shape[:2] if state["dims"] == 2 else feat.shape[:3]
+                if mask_view.shape != spatial_shape:
+                    try:
+                        slices = tuple(
+                            slice(int(translation[i]), int(translation[i]) + spatial_shape[i])
+                            for i in range(len(spatial_shape))
+                        )
+                        mask_view = mask_view[slices]
+                    except Exception:
+                        mask_view = None
+                if mask_view is not None and mask_view.shape == spatial_shape:
+                    mask_bool = mask_view.astype(bool)
+
+            if state["dims"] == 2:
+                H, W, C = feat.shape
+                input_image = state['final_roi'] 
+                if mask_bool is not None and mask_bool.any():
+                    coords = np.argwhere(mask_bool)
+                    min_idx = coords.min(axis=0)
+                    max_idx = coords.max(axis=0) + 1
+                    region_slices = tuple(slice(int(lo), int(hi)) for lo, hi in zip(min_idx, max_idx))
+                    mask_crop = mask_bool[region_slices]
+                    feat_crop = feat[region_slices + (slice(None),)]
+                    feat_crop = np.where(mask_crop[..., None], feat_crop, 0)
+                    input_crop = input_image[region_slices]
+                    ncut_crop = n_cut(feat_crop, input_crop)
+                    ncut_map = np.zeros((H, W), dtype=ncut_crop.dtype)
+                    ncut_view = ncut_map[region_slices]
+                    ncut_view[mask_crop] = ncut_crop[mask_crop]
+                else:
+                    ncut_map = n_cut(feat,input_image)
+
+            if "ncut" in viewer.layers:
+                del viewer.layers["ncut"]
+            viewer.add_image(ncut_map, name="ncut", colormap="viridis", blending="additive",translate=translation)
 
         # create/update PCA-RGB layer immediately if possible
         _ensure_feat_rgb_layer()
+        _ncut()
 
 
    # shared widget config (note: you wrote "tw_", assuming you meant "tv_")
@@ -1170,7 +1449,7 @@ def add_ui(viewer: napari.Viewer) -> None:
         call_button="eval SegHead",
         **COMMON_WIDGETS
     )
-    def eval_widget(tile_h: int = 512, tile_w: int = 512, tile_d: int = 1,
+    def eval_widget(tile_h: int = 1536, tile_w: int = 1536, tile_d: int = 1,
                    tv_denoise_weight : float = 0.1,
                     capture_features: bool = False):
         tile_d = int(tile_d)

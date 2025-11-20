@@ -156,14 +156,25 @@ def _compute_annotation(mask,acronym = False,verbose = True):
 
     return centers,text_annotations_lst
 
-def compute_annotation(mask,acronym=False,verbose = False):
+def compute_annotation(mask,acronym=False,verbose = False,split_lr: bool = True):
+    """Compute annotation centers/labels.
+
+    When ``split_lr`` is True (default) the mask is split into the left/right
+    hemispheres before computing centers so each side is processed separately.
+    Setting ``split_lr`` to False runs the computation once on the full mask,
+    which is useful for volumetric ROIs where splitting is not desired.
+    """
+    if not split_lr:
+        return _compute_annotation(mask,acronym,verbose)
+
     if mask.ndim != 2:
         raise ValueError(f"Expected 2D mask, got shape {mask.shape}")
     middle_width = int(mask.shape[-1])//2
     l_centers, l_annotations = _compute_annotation(mask[:,:middle_width],acronym,verbose)
     r_centers, r_annotations = _compute_annotation(mask[:,middle_width:],acronym,verbose)
 
-    r_centers[:,1] += middle_width #r_centers need a horizontal shift
+    if r_centers.size:
+        r_centers[:,1] += middle_width #r_centers need a horizontal shift
     
     centers = np.concatenate((l_centers,r_centers),axis=0 )
     annotations = l_annotations + r_annotations
@@ -186,4 +197,3 @@ if __name__ == '__main__':
     viewer.add_labels(ft_mask,opacity=0.27)
     viewer.add_image(raw)
     napari.run()
-
