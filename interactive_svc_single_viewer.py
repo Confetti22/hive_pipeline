@@ -5,7 +5,7 @@ Interactive Segmentation UI (v3)
 Single-viewer Napari workflow that:
   • Loads a 2D or 3D ROI image
   • Creates a zero-initialized labels layer for sparse user annotations
-  • Lets the user choose a segmentation model architecture (cmpsd or DPT)
+  • Lets the user choose a segmentation model architecture (cmpsd, DPT, or inception_v3)
   • Freezes the backbone and trains only a lightweight seghead from sparse labels
   • Evaluates full-ROI prediction with tiling when needed
   • Captures a feature volume (pre-seghead) for similarity tools
@@ -18,7 +18,7 @@ Design notes
 - No precomputed featuremap; features are captured from the active backbone.
 - Aux/registered masks are intentionally NOT loaded.
 - The number of seghead output channels is derived from user label integers.
-- DPT uses a DINOv3 backbone + DPTHead (segdino.py). cmpsd uses conv+mlp + ConvSegHead (seg.py).
+- DPT uses a DINOv3 backbone + DPTHead (segdino.py). cmpsd uses conv+mlp + ConvSegHead (seg.py). inception_v3 freezes a pretrained Inception backbone and fuses multi-scale features with a lightweight head.
 
 Dependencies
 ------------
@@ -47,6 +47,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
+import torchvision.models as models
+from torchvision.models import Inception_V3_Weights
+from torchvision.transforms import GaussianBlur
+from scipy.ndimage import zoom
 
 import napari
 from magicgui import magicgui
@@ -57,6 +61,9 @@ from confettii.grah_cut import n_cut
 # ----------------------------------
 # Project bootstrap (repo root import)
 # ----------------------------------
+DOWNSAMPLE = True 
+NAPARI = True
+
 PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_DIR not in sys.path:
     sys.path.insert(0, PROJECT_DIR)
@@ -96,61 +103,148 @@ def load_DKROI():
     return roi
 
 def load_3d_rm009():
-    "the training dataset is from Z55200, Z55500...Z67800 (1um) ,  transfer to 4um space is from Z13800~Z16950"
+    "the training dataset is from  z55200-z67800 (1um) ,  transfer to 4um space is from Z13800~Z16950"
+    "the testing dataset is from  z68100-z69600, transfer to 4um space is Z17025-Z17400 "
     "here load a vol seperated from training range"
-    # vol = tif.imread("/home/confetti/data/rm009/rm009_roi/4/Z13805_C4.tif")
-    vol = tif.imread("/home/confetti/data/rm009/rm009_roi/z16200_z16276C4_d76_h3500_w5250.tif")
-    d,h,w = vol.shape
+    #13750 is the first slice ahead of 55200 and is the 5th in 4um
+    vol = tif.imread("/home/confetti/data/rm009/rm009_roi/4/Z13750_C4.tif")
+    # vol = tif.imread("/home/confetti/data/rm009/rm009_roi/z16200_z16276C4_d76_h3500_w5250.tif")
+    h,w = vol.shape
+    print(f"rm009{vol.shape= }")
     # vol = vol[:,:int(h//2),int(w//2):]
     vol = np.squeeze(vol)
-    return vol
+    label, mask = None,None
+    return vol, label,mask
 
 def get_path_map():
     path_map ={}
-    path_map['visa'] = {
-        'roi': "visa_1536_1536_12.tif",
-        'label': None,
+
+    #parent_dir for 'roi' 'mask' and 'gt' is parent1
+    parent1='/home/confetti/data/t1779/scenes'
+    
+    #parent_dir for 'label','pca','pred' is parent2
+    parent2 = '/home/confetti/data/t1779/scenes/results'
+    #from t1779 dataset
+    path_map['1_1'] = {
+        'roi': "hp_off7000_2962_4452_sieze1536_1536_12.tif",
         'mask': None,
+        'label': 'hp_label.tif',
+        'pca':'hp_pca.tif',
+        'pred':'hp_pred.tif',
+        'pca_incep':'hp_pca_inception_sliding_win.tif',
+        'pred_incep':'hp_predict_inception.tif',
+        'gt':'1_1_gt.tif',
     }
-    path_map['hp'] = {
-        'roi': "hp_1536_1536_12.tif",
-        'label': None,
+    path_map['1_2'] = {
+        'roi': "vii_1536_1536_83.tif",
         'mask': None,
+        'label': '7N_label.tif',
+        'pca':'7N_pca.tif',
+        'pred':'7N_pred.tif',
+        'pca_incep':'7N_pca_inception_sliding_win.tif',
+        'pred_incep':'7N_pred_inception.tif',
+        'gt':'1_2_gt.tif',
+    }
+    path_map['1_3'] = {
+        'roi': "visa_1536_1536_12.tif",
+        'mask': 'visa_mask.tif',
+        'label': 'visa_label.tif',
+        'pca':'visa_pca.tif',
+        'pred':'visa_pred.tif',
+        'pca_incep':'visa_pca_inception_sliding_win.tif',
+        'pred_incep':'visa_pred_inceptionv3.tif',
+        'gt':'1_3_gt.tif',
+
     }
 
-    path_map['7N'] = {
-        'roi': "vii_1536_1536_83.tif",
-        'label': None,
+
+    # from wide field dataset
+
+    path_map['2_1'] = {
+        'roi': "wf_hp_1536_1536.tif",
         'mask': None,
+        'label': 'wf_hp_label.tif',
+        'pca':'wf_hp_pca.tif',
+        'pred':'wf_hp_pred.tif',
+        'gt':'2_1_gt.tif',
     }
+    path_map['2_2'] = {
+        'roi': "wf_viin_1536_1536.tif",
+        'mask': None,
+        'label': 'wf_7n_label.tif',
+        'pca':'wf_7n_pca.tif',
+        'pred':'wf_7n_pred.tif',
+        'gt':'2_2_gt.tif',
+    }
+    path_map['2_3']={
+        'roi': "wf_visa_1536_1536.tif",
+        'mask': 'wf_visa_mask.tif',
+        'label': 'wf_visa_label.tif',
+        'pca':'wf_visa_pca.tif',
+        'pred':'wf_visa_pred.tif',
+        'gt':'2_3_gt.tif',
+    }
+    #from DK dataset
+
+    path_map['3_1'] = {
+        'roi': "dk_hp_roi.tif",
+        'mask': None,
+        'label':'dk_hp_label.tif',
+        'pca':'dk_hp_pca.tif',
+        'pred':'dk_hp_pred.tif',
+        'gt':'3_1_gt.tif',
+    }
+    path_map['3_2'] = {
+        'roi': "dk_vii_roi.tif",
+        'mask': None,
+        'label':'dk_7N_label.tif',
+        'pca':'dk_7N_pca.tif',
+        'pred':'dk_7N_pred.tif',
+        'gt':'3_2_gt.tif',
+    }
+    path_map['3_3']={
+        'roi': "dk_vis_roi.tif",
+        'mask': 'dk_vis_mask.tif',
+        'label':'dk_vis_label.tif',
+        'pca':'dk_vis_pca.tif',
+        'pred':'dk_vis_pred.tif',
+        'gt':'3_3_gt.tif',
+    }
+
 
     return path_map
 
-def load_t1779():
+def load_t1779(region_key: str = "2_3"):
 
     # mask_vol = tif.imread("/home/confetti/data/t1779/register_data_roi/cp_mask_reduced.tif") 
     # mask = mask_vol[5]
     # eroded_mask = erode_labels(mask,width=70)
     # relabelled_mask,mappings = relabel_sequential(eroded_mask)
 
-    region_key = 'hp'
-
+    print(f"{region_key= }")
     path_map = get_path_map()
+
+    if region_key not in path_map:
+        raise ValueError(f"Unknown region_key '{region_key}'. Available: {list(path_map.keys())}")
 
     parent_dir = '/home/confetti/data/t1779/scenes'
     roi_path = f"{parent_dir}/{path_map[region_key]['roi']}"
-    label_path = f"{parent_dir}/{path_map[region_key]['label']}"
-    mask_path = f"{parent_dir}/{path_map[region_key]['mask']}"
+    label_path = f"{parent_dir}/{path_map[region_key]['label']}" if path_map[region_key]['label'] is not None else None
+    mask_path = f"{parent_dir}/{path_map[region_key]['mask']}" if path_map[region_key]['mask'] is not None else None
 
     roi_vol = tif.imread(roi_path)
-    roi = np.max(roi_vol,axis=0)  # max proj to 2d
+    roi = np.max(roi_vol,axis=0)  if (len(roi_vol.shape) ==3 and roi_vol.shape[-1] != 3) else roi_vol
+    # roi = roi_vol[0]
     roi = np.squeeze(roi)
-    assert len(roi.shape) ==2
     
-    label = tif.imread(label_path) if path_map[region_key]['label'] is not None else  None
+    label = tif.imread(label_path) if label_path is not None else  None
     label = np.squeeze(label) if label is not None else None
-    mask = tif.imread(mask_path) if path_map[region_key]['mask'] is not None else None
+    mask = tif.imread(mask_path) if mask_path is not None else None
     mask = np.squeeze(mask) if mask is not None else None   
+    if DOWNSAMPLE is True:
+        roi = zoom(roi, zoom=0.25, order=1)  # downsample to 0.5x for faster testing
+        label = zoom(label, zoom=0.25, order=0)  if label is not None else None
+        mask = zoom(mask, zoom=0.25, order=0)  if mask is not None else None
 
     return roi , label,mask
 
@@ -339,6 +433,11 @@ def pad_to_multiple(img: np.ndarray, x: int, dims:int,mode: str = "constant") ->
     return padded
 
 
+def _uses_imagenet_preproc(model_name: str) -> bool:
+    """Return True if the model expects ImageNet-style 3-channel normalized input."""
+    return model_name in {"DPT", "inception_v3", "inception_v3_single", "inception_v3_preavg_single"}
+
+
 def _ensure_tensor_chw_or_cdhw(img: np.ndarray, dims: int,model_name:str) -> torch.Tensor:
     """Convert numpy image to torch tensor with shape (B=1, C=1, H, W) or (B=1, C=1, D, H, W).
 
@@ -348,7 +447,7 @@ def _ensure_tensor_chw_or_cdhw(img: np.ndarray, dims: int,model_name:str) -> tor
     Returns:
         Torch tensor ready for model input.
     """
-    imagenet_preproc = True if model_name =='DPT' else False
+    imagenet_preproc = _uses_imagenet_preproc(model_name)
 
     if dims == 2:  
 
@@ -552,6 +651,117 @@ class SimpleSegmodel(nn.Module):
             return None
 
 
+class InceptionBackbone(nn.Module):
+    """InceptionV3 feature extractor that returns multi-scale feature maps."""
+
+    def __init__(self, weights: Optional[Inception_V3_Weights] = Inception_V3_Weights.IMAGENET1K_V1):
+        super().__init__()
+        use_aux = weights is not None
+        base = models.inception_v3(weights=weights, aux_logits=use_aux, transform_input=False)
+        self.conv1 = base.Conv2d_1a_3x3
+        self.conv2 = base.Conv2d_2a_3x3
+        self.conv3 = base.Conv2d_2b_3x3
+        self.conv4 = base.Conv2d_3b_1x1
+        self.conv5 = base.Conv2d_4a_3x3
+        self.block5 = nn.Sequential(base.Mixed_5b, base.Mixed_5c, base.Mixed_5d)
+        self.block6 = nn.Sequential(base.Mixed_6a, base.Mixed_6b, base.Mixed_6c, base.Mixed_6d, base.Mixed_6e)
+        self.block7 = nn.Sequential(base.Mixed_7a, base.Mixed_7b, base.Mixed_7c)
+        self.out_channels = [192, 288, 768, 2048]
+
+    def forward(self, x: torch.Tensor) -> List[torch.Tensor]:
+        feats: List[torch.Tensor] = []
+        x = self.conv1(x)
+        x = self.conv2(x)
+        x = self.conv3(x)
+        x = F.max_pool2d(x, kernel_size=3, stride=2)
+        x = self.conv4(x)
+        x = self.conv5(x)
+        feats.append(x)  # 71x71
+        x = F.max_pool2d(x, kernel_size=3, stride=2)
+        x = self.block5(x)
+        feats.append(x)  # 35x35
+        x = self.block6(x)
+        feats.append(x)  # 17x17
+        x = self.block7(x)
+        feats.append(x)  # 8x8
+        return feats
+
+
+class InceptionSegHead(nn.Module):
+    """Lightweight multi-scale fusion head similar in spirit to the DPT head."""
+
+    def __init__(self, in_channels: Sequence[int], n_classes: int, proj_dim: int = 128, fuse_dim: int = 128):
+        super().__init__()
+        self.projects = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv2d(ch, proj_dim, kernel_size=1, bias=False),
+                nn.ReLU(inplace=True),
+            )
+            for ch in in_channels
+        ])
+        self.fuse = nn.Sequential(
+            nn.Conv2d(proj_dim * len(in_channels), fuse_dim, kernel_size=3, padding=1, bias=False),
+            nn.ReLU(inplace=True),
+        )
+        self.classifier = nn.Conv2d(fuse_dim, n_classes, kernel_size=1)
+
+    def forward(self, feats: Sequence[torch.Tensor], return_fused: bool = False):
+        target_hw = feats[0].shape[-2:]
+        processed: List[torch.Tensor] = []
+        for feat, proj in zip(feats, self.projects):
+            x = proj(feat)
+            if x.shape[-2:] != target_hw:
+                x = F.interpolate(x, size=target_hw, mode="bilinear", align_corners=False)
+            processed.append(x)
+
+        fused = torch.cat(processed, dim=1)
+        fused = self.fuse(fused)
+        logits = self.classifier(fused)
+
+        if return_fused:
+            return logits, fused
+        return logits
+
+
+class InceptionSegModel(nn.Module):
+    def __init__(self, backbone: InceptionBackbone, head: InceptionSegHead):
+        super().__init__()
+        self.backbone = backbone
+        self.head = head
+        self.feature_map: Optional[np.ndarray] = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        feats = self.backbone(x)
+        if self.training:
+            logits = self.head(feats, return_fused=False)
+            fused = None
+        else:
+            logits, fused = self.head(feats, return_fused=True)
+
+        logits = F.interpolate(logits, size=x.shape[-2:], mode="bilinear", align_corners=False)
+
+        if (not self.training) and fused is not None:
+            self.feature_map = self._to_feature_map(fused, x.shape[-2:])
+
+        return logits
+
+    def _to_feature_map(self, fused: torch.Tensor, spatial_shape: Tuple[int, int]) -> np.ndarray:
+        print(f"in inception_v3: {fused.shape= }, {spatial_shape= }")
+        #in inception_v3: fused.shape= torch.Size([1, 128, 92, 92]) B*C*H*W, spatial_shape= torch.Size([384, 384])
+        blur = GaussianBlur(kernel_size=11,sigma=4) 
+        fused = blur(fused)
+
+        up = F.interpolate(fused, size=spatial_shape, mode="bilinear", align_corners=False)
+        
+        up = up.detach().cpu().permute(0, 2, 3, 1).contiguous().numpy()
+        return np.squeeze(up)
+
+    def get_feature_map(self):
+        if not self.training:
+            return self.feature_map
+        return None
+
+
 def build_cmpsd(dims: int, n_classes: int,) -> Modelsegmodel:
     """Build cmpsd backbone + ConvSegHead.
 
@@ -606,6 +816,31 @@ def build_cmpsd(dims: int, n_classes: int,) -> Modelsegmodel:
     return Modelsegmodel("cmpsd", 3 ,seg_model,n_classes)
 
 
+def build_inception_v3(dims: int, n_classes: int) -> Modelsegmodel:
+    """Build inception_v3 backbone + lightweight multi-scale seg head."""
+    if dims != 2:
+        raise ValueError("inception_v3 model currently supports 2D inputs only.")
+
+    try:
+        backbone = InceptionBackbone(Inception_V3_Weights.IMAGENET1K_V1)
+    except Exception as exc:
+        print(f"Falling back to randomly initialized InceptionV3 weights due to: {exc}")
+        backbone = InceptionBackbone(weights=None)
+
+    backbone.eval()
+    for p in backbone.parameters():
+        p.requires_grad = False
+
+    head = InceptionSegHead(backbone.out_channels, n_classes=n_classes, proj_dim=128, fuse_dim=128)
+    seg_model = InceptionSegModel(backbone, head)
+    seg_model.train()
+    seg_model.backbone.eval()
+
+    print("\n", "unfrozen model's layer name", [f"{n}" for n, p in seg_model.named_parameters() if p.requires_grad], "\n")
+
+    return Modelsegmodel("inception_v3", dims, seg_model, n_classes)
+
+
 from lib.arch.segdino import DPT,Dinov3HFBackbone
 from transformers import AutoModel
 
@@ -646,7 +881,8 @@ def build_and_load_weights_dpt(dims: int, n_classes: int, ) -> Modelsegmodel:
     )
     backbone = Dinov3HFBackbone(hf_backbone)
     seg_model = DPT(nclass=n_classes,backbone=backbone)
-    ckpt= torch.load("/home/confetti/e5_workspace/hive1/outs/seg_dino/seg_dino_1zmip/model_epoch_3.pth")
+    # ckpt= torch.load("/home/confetti/e5_workspace/hive1/outs/seg_dino/seg_dino_1zmip/model_epoch_3.pth")
+    ckpt= torch.load("/home/confetti/e5_workspace/hive1/outs/seg_dino/seg_dino_nomask_with_layer2_5_8_11_metrics_batch16_1zmip/model_epoch_30.pth")
     weights = ckpt['seg_model']
 
     result = seg_model.load_state_dict(weights)
@@ -759,19 +995,6 @@ def train_seghead(segmodel: Modelsegmodel,
 
 
 
-import numpy as np
-import torch
-import torch.nn.functional as F
-from skimage.restoration import denoise_tv_chambolle
-from collections import defaultdict
-
-import numpy as np
-import torch
-import torch.nn.functional as F
-from skimage.restoration import denoise_tv_chambolle
-from collections import defaultdict
-from typing import Dict, Any, Tuple, Optional
-
 
 import numpy as np
 import torch
@@ -866,7 +1089,7 @@ def eval_full_roi(
     device: str = "cuda",
     tile: Optional[Tuple[int, ...]] = None,
     capture_features: bool = True,
-    tv_denoise_weight: float = 0.1,
+    tv_denoise_weight: float = 100000,
     overlap: float = 0.25,
 ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
     dims = segmodel.dims
@@ -1181,9 +1404,9 @@ def add_ui(viewer: napari.Viewer) -> None:
     if "user_labels" in viewer.layers:
         viewer.layers.remove("user_labels")
 
-    # roi = load_3d_rm009()
+    roi,label,mask = load_3d_rm009()
     # roi = load_DKROI() 
-    roi, label,mask = load_t1779()
+    # roi, label,mask = load_t1779()
     roi_shape = roi.shape[:state["dims"]]
 
     state["roi"] = roi
@@ -1201,7 +1424,7 @@ def add_ui(viewer: napari.Viewer) -> None:
 
     # --- Build model button ---
     @magicgui(call_button="Build Model",
-              arch={"choices": ["cmpsd", "DPT"]})
+              arch={"choices": ["cmpsd", "DPT", "inception_v3"]})
     def build_model_widget(arch: str = "DPT"):
         """Instantiate backbone+seghead given current labels for channel count."""
         roi = state["roi"]
@@ -1214,21 +1437,23 @@ def add_ui(viewer: napari.Viewer) -> None:
         dims = state["dims"]
         if arch == "cmpsd":
             state["segmodel"] = build_cmpsd(dims=dims, n_classes=n_classes)
+        elif arch == "inception_v3":
+            state["segmodel"] = build_inception_v3(dims=dims, n_classes=n_classes)
         else:
             state["segmodel"] = build_dpt(dims=dims, n_classes=n_classes)
         _ask(viewer, "Build Model", f"Built {arch} with n_classes={n_classes}, dims={dims}")
 
     # --- Train seghead ---
-
-    @magicgui(
-        call_button="Train SegHead",
-        epochs={"min": 1, "max": 50},
-        batch_size={"min": 1, "max": 512},
-        lr={"step": 1e-4},
-        patch_d={"widget_type": "LineEdit"},
-        patch_h={"widget_type": "LineEdit"},
-        patch_w={"widget_type": "LineEdit"},
+   # shared widget config (note: you wrote "tw_", assuming you meant "tv_")
+    COMMON_WIDGETS = dict(
+        tile_d={"widget_type": "LineEdit"},
+        tile_h={"widget_type": "LineEdit"},
+        tile_w={"widget_type": "LineEdit"},
+        tv_denoise_weight={"widget_type": "LineEdit"},
     )
+     
+
+
     def train_widget(epochs: int = 50, batch_size: int = 16, lr: float = 1e-4,
                      patch_h: int =1536 , patch_w: int = 1536,
                      patch_d: int = 1):
@@ -1243,14 +1468,14 @@ def add_ui(viewer: napari.Viewer) -> None:
         segmodel: Modelsegmodel = state["segmodel"]
         roi = state["roi"]
         labels = state["labels"]
-        if segmodel is None:
+        if segmodel is None and NAPARI:
             _ask(viewer, "Train", "Build the model first.")
             return
-        if labels is None or np.count_nonzero(labels) == 0:
+        if (labels is None or np.count_nonzero(labels) == 0) and NAPARI:
             _ask(viewer, "Train", "Please draw some labels on 'user_labels' layer.")
             return
         dims = state["dims"]
-        imagenet_preproc = True if segmodel.name =='DPT' else False
+        imagenet_preproc = _uses_imagenet_preproc(segmodel.name)
 
         if dims == 2:
             print(f"{roi.shape= }, {labels.shape= }")
@@ -1262,9 +1487,9 @@ def add_ui(viewer: napari.Viewer) -> None:
         n_classes = max(2, len(np.unique(labels))-1)
         train_seghead(segmodel, ds, n_classes=n_classes, device="cuda" if torch.cuda.is_available() else "cpu",
                       epochs=epochs, batch_size=batch_size, lr=lr)
-        _ask(viewer, "Train", "Training finished.")
+        # _ask(viewer, "Train", "Training finished.")
+        print(f"Training finished.")
 
-    
     
     def _eval_widget(tile_h: int , tile_w: int , tile_d: int,
                      tv_denoise_weight : float,
@@ -1294,7 +1519,10 @@ def add_ui(viewer: napari.Viewer) -> None:
             roi = pad_to_multiple(roi, 16,dims=dims)
         
         # Try to discover a valid bbox from the shapes layer
-        bbox = find_valid_rectangle_bbox_from_shapes(state)
+        if NAPARI:
+            bbox = find_valid_rectangle_bbox_from_shapes(state)
+        else:
+            bbox = None
 
         if bbox is None:
             pred, feat = eval_full_roi(segmodel, roi, device, tile=tile, capture_features=capture_features,tv_denoise_weight=tv_denoise_weight)
@@ -1330,16 +1558,18 @@ def add_ui(viewer: napari.Viewer) -> None:
         # tsne_plot(feat,state["labels"])
 
 
-        if "prediction" in viewer.layers:
+        if "prediction" in viewer.layers and NAPARI:
             viewer.layers.remove("prediction")
         viewer.add_labels(pred, name="prediction",translate=offset)
-        _ask(viewer, "Evaluate", "Prediction layer added. Feature volume captured." if capture_features else "Prediction done.")
+        # _ask(viewer, "Evaluate", "Prediction layer added. Feature volume captured." if capture_features else "Prediction done.")
+        print(f"Prediction layer added. Feature volume captured." if capture_features else "Prediction done.")
 
         def _ensure_feat_rgb_layer():
             feat = state.get("feat", None)
             translation = state['offset'] 
 
-            if feat is None:
+            
+            if feat is None and NAPARI:
                 _ask(viewer, "PCA-RGB", "Capture features first (Evaluate with capture_features=True).")
                 return
 
@@ -1379,9 +1609,12 @@ def add_ui(viewer: napari.Viewer) -> None:
                     rgb_flat[mask_flat] = masked_rgb.reshape(-1, 3)
                 rgb = rgb_flat.reshape(*spatial_shape, 3)
 
-            if "feat_rgb" in viewer.layers:
+            if "feat_rgb" in viewer.layers and NAPARI:
                 del viewer.layers["feat_rgb"]
-            viewer.add_image(rgb, name="feat_rgb", rgb=True, blending="additive",translate=translation)
+
+            if NAPARI:
+                viewer.add_image(rgb, name="feat_rgb", rgb=True, blending="additive",translate=translation)
+            state['pca'] = rgb
         
         def _ncut():
             feat = state.get("feat", None)
@@ -1433,38 +1666,48 @@ def add_ui(viewer: napari.Viewer) -> None:
 
         # create/update PCA-RGB layer immediately if possible
         _ensure_feat_rgb_layer()
-        _ncut()
+        # _ncut()
 
-
-   # shared widget config (note: you wrote "tw_", assuming you meant "tv_")
-    COMMON_WIDGETS = dict(
-        tile_d={"widget_type": "LineEdit"},
-        tile_h={"widget_type": "LineEdit"},
-        tile_w={"widget_type": "LineEdit"},
-        tv_denoise_weight={"widget_type": "LineEdit"},
-    )
-     
-    # --- Evaluate ---
-    @magicgui(
-        call_button="eval SegHead",
-        **COMMON_WIDGETS
-    )
     def eval_widget(tile_h: int = 1536, tile_w: int = 1536, tile_d: int = 1,
-                   tv_denoise_weight : float = 0.1,
-                    capture_features: bool = False):
+                   tv_denoise_weight : float = 100000,
+                    capture_features: bool = True):
         tile_d = int(tile_d)
         tile_h = int(tile_h)
         tile_w = int(tile_w)
         tv_denoise_weight = float(tv_denoise_weight)
         _eval_widget(tile_h,tile_w,tile_d,tv_denoise_weight,capture_features=capture_features)
-    
+
+
+    @magicgui(
+    call_button="Train SegHead and then eval",
+    epochs={"min": 1, "max": 50},
+    batch_size={"min": 1, "max": 512},
+    lr={"step": 1e-4},
+    patch_d={"widget_type": "LineEdit"},
+    patch_h={"widget_type": "LineEdit"},
+    patch_w={"widget_type": "LineEdit"},
+    ** COMMON_WIDGETS
+    )
+    def train_and_eval_widget(
+                    epochs: int = 50, batch_size: int = 16, lr: float = 1e-4,
+                    patch_h: int =1536 , patch_w: int = 1536,patch_d: int = 1,
+
+                    tile_h: int = 1536, tile_w: int = 1536, tile_d: int = 1,
+                    tv_denoise_weight : float = 100000,
+                    capture_features: bool = True
+                     ):
+        train_widget(epochs,batch_size,lr,patch_h,patch_w,patch_d)
+        print(f"Training done, starting eval...")
+        eval_widget(tile_h,tile_w,tile_d,tv_denoise_weight,capture_features=capture_features)
+        print(f"Train+Eval done.")
+        
 
     @magicgui(
         call_button="eval SegHead pretrained",
         **COMMON_WIDGETS
     )
     def eval_widget_predefined(tile_h: int = 512, tile_w: int = 512, tile_d: int = 1,
-                   tv_denoise_weight : float = 1,
+                   tv_denoise_weight : float = 10000,
                     capture_features: bool = False):
         tile_d = int(tile_d)
         tile_h = int(tile_h)
@@ -1548,8 +1791,7 @@ def add_ui(viewer: napari.Viewer) -> None:
 
     # Dock the widgets
     viewer.window.add_dock_widget(build_model_widget, area="right")
-    viewer.window.add_dock_widget(train_widget, area="right")
-    viewer.window.add_dock_widget(eval_widget, area="right")
+    viewer.window.add_dock_widget(train_and_eval_widget, area="right")
     viewer.window.add_dock_widget(eval_widget_predefined, area="right")
     viewer.window.add_dock_widget(enable_similarity, area="right")
 

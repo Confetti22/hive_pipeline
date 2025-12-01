@@ -40,8 +40,6 @@ class SimpleViewer2(widgets.Container):
         self.viewer1= viewer1
         self.roi_layer = viewer1.add_image(np.zeros((3,3,3),dtype =np.uint16),name ='roi')
         self.v1_reg_msk_ly = viewer1.add_labels(np.zeros((3,3,3),dtype = np.uint16),name='aux_mask',opacity =self.paras['opacity'])
-        self.lr_roi_mask = None
-        self.v1_annotation_scale = None
 
     
 
@@ -378,8 +376,6 @@ class SimpleViewer2(widgets.Container):
                                                                 return_ori_scale_img=True,
                                                                 )
         self.v1_reg_msk_ly.data = mask
-        self.lr_roi_mask = lr_mask
-        self.v1_annotation_scale = self.paras['atlas_vs']/ (2** v1_level_int)
 
         self.viewer1.camera.zoom = 0.7
         self.viewer1.camera.center=(0,v1_roi_size[1],v1_roi_size[2])
@@ -462,80 +458,38 @@ class SimpleViewer2(widgets.Container):
 
         if acronym_mode == 'None':
             safe_remove_layer_given_full_name(self.viewer2.layers,'region_annotation_id')
-            safe_remove_layer_given_full_name(self.viewer1.layers,'region_annotation_id')
             return
 
-        self._update_viewer2_annotations(acronym_mode)
-        self._update_viewer1_annotations(acronym_mode)
+        else:
+            safe_remove_layer_given_full_name(self.viewer2.layers,'region_annotation_id')
+            if acronym_mode =='all':
+                target_mask = self.lr_slice_mask 
+            else:
+                target_region = self.region_input.value
+                #tranfer copy of mask, in this function, will need to set half of the mask to zeroes
+                target_mask = filter_mask_given_acronym_lst([target_region],self.lr_slice_mask.copy(),half= self.which_half_dropdown.value)
 
-    def _prepare_target_mask(self, mask, acronym_mode):
-        if mask is None:
-            return None
-        if acronym_mode == 'all':
-            return mask
-        target_region = self.region_input.value
-        return filter_mask_given_acronym_lst(
-            [target_region],
-            mask.copy(),
-            half=self.which_half_dropdown.value,
-        )
+            region_centers, region_annotations = compute_annotation(target_mask,acronym=True)
+            region_centers = region_centers.astype(float)
 
-    def _update_viewer2_annotations(self, acronym_mode):
-        safe_remove_layer_given_full_name(self.viewer2.layers,'region_annotation_id')
-        target_mask = self._prepare_target_mask(getattr(self, 'lr_slice_mask', None), acronym_mode)
-        if target_mask is None:
+            v2_level_int = 0 
+            region_centers *= self.paras['atlas_vs']/ (2**v2_level_int)
+
+            self.viewer2.add_points(
+                region_centers,
+                properties={"label": region_annotations},
+                text={
+                    "string": "{label}",
+                    "anchor": "center",
+                    "color": "orange",
+                    "size": 8,
+                },
+                size=4,
+                face_color="transparent",
+                border_color= 'transparent',
+                name="region_annotation_id",
+            )
             return
-
-        region_centers, region_annotations = compute_annotation(target_mask,acronym=True)
-        if region_centers.size == 0:
-            return
-        region_centers = region_centers.astype(float)
-
-        v2_level_int = 0 
-        region_centers *= self.paras['atlas_vs']/ (2**v2_level_int)
-
-        self.viewer2.add_points(
-            region_centers,
-            properties={"label": region_annotations},
-            text={
-                "string": "{label}",
-                "anchor": "center",
-                "color": "orange",
-                "size": 8,
-            },
-            size=4,
-            face_color="transparent",
-            border_color= 'transparent',
-            name="region_annotation_id",
-        )
-
-    def _update_viewer1_annotations(self, acronym_mode):
-        safe_remove_layer_given_full_name(self.viewer1.layers,'region_annotation_id')
-        target_mask = self._prepare_target_mask(self.lr_roi_mask, acronym_mode)
-        if target_mask is None or self.v1_annotation_scale is None:
-            return
-
-        region_centers, region_annotations = compute_annotation(target_mask,acronym=True,split_lr=False)
-        if region_centers.size == 0:
-            return
-
-        region_centers = region_centers.astype(float)
-        region_centers *= self.v1_annotation_scale
-
-        self.viewer1.add_points(
-            region_centers,
-            properties={"label": region_annotations},
-            text={
-                "string": "{label}",
-                "anchor": "center",
-                "color": "orange",
-                "size": 8,
-            },
-            size=4,
-            face_color="transparent",
-            border_color= 'transparent',
-            name="region_annotation_id",
-        )
             
 
 
@@ -955,3 +909,4 @@ class SimpleViewer(widgets.Container):
 
 
         
+

@@ -37,7 +37,7 @@ class Dinov3HFBackbone(nn.Module):
     Wrap a HuggingFace DINOv3 ViT (e.g., ViT-S/16) so it works as a DPT backbone.
 
     Exposes:
-      - embed_dim: channel dim of tokens (e.g., 384 for ViT-S/16).
+      - embed_dim: channel dim of tokens (e.g., 768 for ViT-S/16).
       - get_intermediate_layers(x, n): returns list of tensors [B, HW, C] (CLS removed)
         for the transformer block indices given in `n`. `x` is [B,3,H,W] already normalized.
     """
@@ -98,11 +98,13 @@ class DPTHead(nn.Module):
         self, 
         nclass,
         in_channels, 
-        features=256, 
+        features=128, 
         use_bn=False, 
         out_channels=[256, 512, 1024],
     ):
         super(DPTHead, self).__init__()
+        # in_channels  is  the embed_dim of backbone is 768
+        # out_channels  = [96, 192, 384, 768]
         self.projects = nn.ModuleList([
             nn.Conv2d(
                 in_channels=in_channels,
@@ -113,6 +115,8 @@ class DPTHead(nn.Module):
             ) for out_channel in out_channels
         ])
         
+        # out_channels  = [96, 192, 384, 768]
+        # features =128 
         self.scratch = _make_scratch(
             out_channels,
             features,
@@ -198,8 +202,8 @@ class DPT(nn.Module):
 
         #TODO: maybe need a suitable blur method at feature map to blur out feature variation across cell, 
         # but preserve the difference at region boundary
-        # blur = GaussianBlur (kernel_size=3, sigma=0.5)
-        # fused = blur(fused)
+        blur = GaussianBlur (kernel_size=3, sigma=1)
+        fused = blur(fused)
 
         up_fused= F.interpolate(fused, (patch_h * 16, patch_w * 16), mode='bilinear', align_corners= False)
         

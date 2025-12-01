@@ -7,6 +7,7 @@ sys.path.insert(0, project_dir)
 from lib.arch.ae import build_cmpsd_model,load_compose_encoder_dict,build_encoder_model,load_encoder2encoder
 from config.load_config import load_cfg
 from helper.ncut_helper import segment_and_plot_from_feats 
+from torchsummary import summary
 #%%
 device ='cuda'
 print(f'{os.getcwd()}=')
@@ -23,6 +24,8 @@ encoder_model = build_encoder_model(args,dims=3)
 encoder_model.eval().to(device)
 load_encoder2encoder(encoder_model,cnn_ckpt_pth)
 
+#%%
+device ='cuda'
 import torchvision.models as models
 from torchvision.models import Inception_V3_Weights
 
@@ -30,6 +33,8 @@ weights = Inception_V3_Weights.DEFAULT
 incep_model = models.inception_v3(weights = weights, progress =True)
 incep_model.eval()
 incep_model.to(device)
+print(incep_model)
+summary(incep_model,(3,1536,1536))
 
 #%%
 import torch
