@@ -57,7 +57,7 @@ from magicgui import magicgui
 from qtpy.QtWidgets import QMessageBox
 from confettii.plot_helper import three_pca_as_rgb_image
 from confettii.grah_cut import n_cut
-
+from time import time
 # ----------------------------------
 # Project bootstrap (repo root import)
 # ----------------------------------
@@ -74,7 +74,8 @@ if PROJECT_DIR not in sys.path:
 from lib.arch.seg import ConvSegHead  # your lightweight head for cmpsd
 from lib.arch.segdino import DPTHead  # your DPT seghead
 from config.load_config import load_cfg
-
+from helper.image_reader import wrap_image
+from scipy.ndimage import zoom
 # ----------------------------------
 # Dataset & utilities
 # ----------------------------------
@@ -91,16 +92,20 @@ import tifffile as tif
 
 def load_DKROI():
     rois = []
-    for idx in range(270,272):
+    for idx in range(149,201):
         roi = tif.imread(f"/home/confetti/data/dk/MD594/MD594/{idx}.tif")
-        roi = roi[10000:10000+3200,27000: 27000+ 4800,:]
+        offset = [13200,30000]
+        size = [2400,2400]
+        roi = roi[offset[0]:offset[0]+size[0],offset[1]:offset[1]+size[1],:]
+        roi = zoom(roi,(0.2,0.2,1),order=1)
         h, w = roi.shape[:2]
         trim_h = h % 16
         trim_w = w % 16
         roi = roi[:h -trim_h, :w-trim_w, :]
         rois.append(roi)
     roi = np.array(rois)
-    return roi
+    label,mask = None,None
+    return roi,label,mask
 
 def load_3d_rm009():
     "the training dataset is from  z55200-z67800 (1um) ,  transfer to 4um space is from Z13800~Z16950"
@@ -214,7 +219,34 @@ def get_path_map():
 
     return path_map
 
-def load_t1779(region_key: str = "2_3"):
+def load_t1779_2():
+    #load a vol around hp
+    offset =[7000,2700,3600]
+    size = [512,2048,4096]
+    image_vol = wrap_image("/home/confetti/mnt/data/VISoR_Reconstruction/SIAT_SIAT/BiGuoqiang/Mouse_Brain/20210131_ZSS_USTC_THY1-YFP_1779_1/Reconstruction_1.0/z00000_c1.ims.part")
+    roi = image_vol.from_roi(coords=[*offset, *size],level=0,channel=2)
+    roi = zoom(roi,(0.25,0.25,0.25),order=1)
+    label,mask = None, None
+    return roi, label, mask
+
+def load_t1779_3():
+    #load a 3d version of '1_3'
+    from helper.image_reader import Ims_Image 
+    ims_vol =Ims_Image('/home/confetti/e5_data/t1779/t1779.ims',channel=2)
+    roi_offset =[6980,3425,4040]
+    roi_size =[64,1536,1536]
+    roi = ims_vol.from_roi(coords=[*roi_offset,*roi_size],level=0)
+    label= np.zeros_like(roi)
+    mask = np.zeros_like(roi)
+    return roi, label,mask
+
+
+
+def load_t1779_1(region_key: str = "2_3",three_d=False):
+    """
+    if thee_d is True, will not using mip
+
+    """
 
     # mask_vol = tif.imread("/home/confetti/data/t1779/register_data_roi/cp_mask_reduced.tif") 
     # mask = mask_vol[5]
@@ -233,7 +265,7 @@ def load_t1779(region_key: str = "2_3"):
     mask_path = f"{parent_dir}/{path_map[region_key]['mask']}" if path_map[region_key]['mask'] is not None else None
 
     roi_vol = tif.imread(roi_path)
-    roi = np.max(roi_vol,axis=0)  if (len(roi_vol.shape) ==3 and roi_vol.shape[-1] != 3) else roi_vol
+    roi = np.max(roi_vol,axis=0)  if (len(roi_vol.shape) ==3 and roi_vol.shape[-1] != 3 and not three_d) else roi_vol
     # roi = roi_vol[0]
     roi = np.squeeze(roi)
     
@@ -245,6 +277,20 @@ def load_t1779(region_key: str = "2_3"):
         roi = zoom(roi, zoom=0.25, order=1)  # downsample to 0.5x for faster testing
         label = zoom(label, zoom=0.25, order=0)  if label is not None else None
         mask = zoom(mask, zoom=0.25, order=0)  if mask is not None else None
+    if three_d:
+        z = roi.shape[0]
+        half_z = int(z/2)
+        lz = half_z
+        rz = half_z if z%2==0 else half_z -1
+
+        if label is not None:
+            if label.ndim == 2:
+                label = label[None, ...]
+            label = np.pad(label, ((lz, rz), (0, 0), (0, 0)), mode="constant", constant_values=0)
+        if mask is not None:
+            if mask.ndim == 2:
+                mask = mask[None, ...]
+            mask = np.pad(mask, ((lz, rz), (0, 0), (0, 0)), mode="constant", constant_values=1)
 
     return roi , label,mask
 
@@ -472,8 +518,7 @@ def _ensure_tensor_chw_or_cdhw(img: np.ndarray, dims: int,model_name:str) -> tor
             else:
                 t = preprocess_uint8rgb_for_imagenet(img)
 
-            if t.shape[1] ==1:#DPT model avoid D 
-                t= t.squeeze(1)
+            # Keep the depth axis (even if size==1) so downstream 3D tiling logic stays consistent.
             t = t.unsqueeze(0) #add B
 
         else:
@@ -1264,6 +1309,10 @@ def eval_full_roi(
 
                         probs = F.softmax(logits, dim=1).detach().cpu().numpy()
                         probs = np.squeeze(probs, axis=0)  # [C, d, h, w]
+                        if probs.ndim == 3:  # handle models that dropped the depth axis (D=1)
+                            probs = probs[:, None, ...]
+                        elif probs.ndim != 4:
+                            raise ValueError(f"Unexpected probs shape {probs.shape}, expected 4 dims.")
 
                         td, th, tw = probs.shape[1:]
                         w_d = min(td, blend.shape[0], z1 - z0)
@@ -1396,7 +1445,7 @@ def add_ui(viewer: napari.Viewer) -> None:
         "segmodel": None,           # Modelsegmodel
         "pred": None,             # np.ndarray prediction
         "feat": None,             # np.ndarray feature volume [C,H,W] or [C,D,H,W]
-        "dims": 2,
+        "dims": 3,
     }
 
     if "roi" in viewer.layers:
@@ -1404,9 +1453,9 @@ def add_ui(viewer: napari.Viewer) -> None:
     if "user_labels" in viewer.layers:
         viewer.layers.remove("user_labels")
 
-    roi,label,mask = load_3d_rm009()
-    # roi = load_DKROI() 
-    # roi, label,mask = load_t1779()
+    # roi,label,mask = load_3d_rm009()
+    # roi,label,mask = load_DKROI() 
+    roi, label,mask = load_t1779_3()
     roi_shape = roi.shape[:state["dims"]]
 
     state["roi"] = roi
@@ -1454,7 +1503,7 @@ def add_ui(viewer: napari.Viewer) -> None:
      
 
 
-    def train_widget(epochs: int = 50, batch_size: int = 16, lr: float = 1e-4,
+    def train_widget(epochs: int = 20, batch_size: int = 16, lr: float = 1e-4,
                      patch_h: int =1536 , patch_w: int = 1536,
                      patch_d: int = 1):
         """Train lightweight seghead from sparse labels.
@@ -1689,17 +1738,20 @@ def add_ui(viewer: napari.Viewer) -> None:
     ** COMMON_WIDGETS
     )
     def train_and_eval_widget(
-                    epochs: int = 50, batch_size: int = 16, lr: float = 1e-4,
-                    patch_h: int =1536 , patch_w: int = 1536,patch_d: int = 1,
+                    epochs: int = 2, batch_size: int = 16, lr: float = 1e-4,
+                    patch_h: int =512 , patch_w: int = 512,patch_d: int = 1,
 
-                    tile_h: int = 1536, tile_w: int = 1536, tile_d: int = 1,
+                    tile_h: int = 512, tile_w: int = 512, tile_d: int = 1,
                     tv_denoise_weight : float = 100000,
                     capture_features: bool = True
                      ):
+        begin = time()
         train_widget(epochs,batch_size,lr,patch_h,patch_w,patch_d)
-        print(f"Training done, starting eval...")
+        current = time()
+        print(f"Training done, train time{current - begin:.4f}")
         eval_widget(tile_h,tile_w,tile_d,tv_denoise_weight,capture_features=capture_features)
-        print(f"Train+Eval done.")
+        end = time()
+        print(f"Train+Eval done. eval time{end -current:.4f}, total time{end - begin:.4f}")
         
 
     @magicgui(

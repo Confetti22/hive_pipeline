@@ -182,15 +182,15 @@ def _max_label_value(rows: Dict[str, Dict[str, np.ndarray]]) -> int:
     return max_val
 
 
-def build_figure(output_path: Path = Path("results/paper_graph_d0_hp_dilate.png")) -> Path:
-    # rows = {key: _load_row(key,use_cfg_path=False) for key in ("1_1","1_2","1_3","2_1","2_2","2_3","3_1","3_2","3_3")}
-    rows = {key: _load_row(key,use_cfg_path=False) for key in ("1_1","2_1","3_1")}
+def build_figure(output_path: Path = Path("results/paper_graph_d0_full_dilate.png")) -> Path:
+    rows = {key: _load_row(key,use_cfg_path=False) for key in ("1_1","1_2","1_3","2_1","2_2","2_3","3_1","3_2","3_3")}
+    # rows = {key: _load_row(key,use_cfg_path=False) for key in ("1_1","2_1","3_1")}
     max_label = _max_label_value(rows)
     cmap = _label_cmap(max_label)
 
-    fig = plt.figure(figsize=(18, 10))
+    fig = plt.figure(figsize=(18, 30))
     grid = fig.add_gridspec(
-        nrows=3,
+        nrows=9,
         ncols=7,
         width_ratios=[1, 1, 1, 0.18, 1, 1, 1],
         hspace=0.08,
@@ -205,11 +205,11 @@ def build_figure(output_path: Path = Path("results/paper_graph_d0_hp_dilate.png"
         "5 Prediction (Our)",
         "6 Prediction (InceptionV3)",
     ]
-    # row_tags = ["a", "b", "c","d","e","f","g","h","i"]
-    row_tags = ["a", "b", "c"]
+    row_tags = ["a", "b", "c","d","e","f","g","h","i"]
+    # row_tags = ["a", "b", "c"]
 
-    # for row_idx, (row_tag, key) in enumerate(zip(row_tags, ("1_1","1_2","1_3","2_1","2_2","2_3","3_1","3_2","3_3"))):
-    for row_idx, (row_tag, key) in enumerate(zip(row_tags, ("1_1","2_1","3_1"))):
+    for row_idx, (row_tag, key) in enumerate(zip(row_tags, ("1_1","1_2","1_3","2_1","2_2","2_3","3_1","3_2","3_3"))):
+    # for row_idx, (row_tag, key) in enumerate(zip(row_tags, ("1_1","2_1","3_1"))):
         data = rows[key]
         axes = [
             fig.add_subplot(grid[row_idx, 0]),

@@ -1,5 +1,18 @@
 #%%
 import tifffile as tif
+import argparse
+import pandas as pd
+import napari
+import tifffile as tif
+import re
+import io
+import numpy as np
+import pandas as pd
+import json
+import numpy as np
+import matplotlib.pyplot as plt
+from vedo import Line, Plotter, Points
+
 img = tif.imread("/home/confetti/data/dk/MD594/MD594/176.tif")
 print(f"{img.dtype= }")
 print(img.max())
@@ -14,16 +27,6 @@ Usage:
 """
 
 
-import argparse
-import pandas as pd
-import napari
-import tifffile as tif
-import re
-import io
-import numpy as np
-import pandas as pd
-import json
-import numpy as np
 
 def get_coordinates(json_path: str, region_name: str, slice_idx: int) -> np.ndarray:
     """
@@ -171,15 +174,119 @@ def show_region(df: pd.DataFrame, region_name: str, section: int):
     plt.show()
 
     napari.run()
+def _polygon_area(coords: np.ndarray) -> float:
+    """Fast polygon area via the shoelace formula; returns 0 for degenerate input."""
+    if not isinstance(coords, np.ndarray) or coords.ndim != 2 or coords.shape[1] != 2:
+        return 0.0
+    if len(coords) < 3:
+        return 0.0
+
+    x = coords[:, 0]
+    y = coords[:, 1]
+    return 0.5 * float(np.abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
+
+
+def extract_typical_boundary(df: pd.DataFrame, region_name: str, start_section: int, end_section: int):
+    """
+    Pick the boundary whose area is closest to the median area across the section range.
+
+    This gives a "typical" contour without expensive averaging or resampling.
+    """
+    mask = (
+        df["name"].astype(str) == str(region_name)
+    ) & (df["section"].between(int(start_section), int(end_section)))
+
+    candidates = []
+    for sec, verts in zip(df.loc[mask, "section"], df.loc[mask, "vertices_np"]):
+        if not (isinstance(verts, np.ndarray) and verts.ndim == 2 and verts.shape[1] == 2):
+            continue
+        area = _polygon_area(verts)
+        candidates.append((int(sec), verts, area))
+
+    if not candidates:
+        raise SystemExit(
+            f"No usable boundaries found for {region_name} between sections {start_section} and {end_section}."
+        )
+
+    areas = np.fromiter((c[2] for c in candidates), dtype=float)
+    median_area = float(np.median(areas))
+    idx = int(np.abs(areas - median_area).argmin())
+    section, boundary, _ = candidates[idx]
+    return boundary, section
+
+
+def extract_boundary_stack(df: pd.DataFrame, region_name: str):
+    """Collect all valid boundaries for a region across available sections, sorted by section."""
+    sel = df[df["name"].astype(str) == str(region_name)].dropna(subset=["section"])
+    sel = sel.sort_values("section")
+
+    stack = []
+    for sec, verts in zip(sel["section"], sel["vertices_np"]):
+        if isinstance(verts, np.ndarray) and verts.ndim == 2 and verts.shape[1] == 2:
+            stack.append((int(sec), verts))
+
+    if not stack:
+        raise SystemExit(f"No boundaries found for {region_name} across sections.")
+
+    return stack
+
+
+def show_boundary_vedo(boundary: np.ndarray, region_name: str, section: int, spacing=(1.0, 1.0, 1.0)):
+    """Display a 2D boundary as a closed 3D line (z=0) in vedo.
+
+    spacing: (z, y, x) voxel spacing to scale coordinates.
+    """
+    if not isinstance(boundary, np.ndarray) or boundary.ndim != 2 or boundary.shape[1] != 2:
+        raise ValueError("boundary must be an (N, 2) array")
+
+    sz, sy, sx = spacing
+    coords3d = np.column_stack(
+        [boundary[:, 0] * sx, boundary[:, 1] * sy, np.zeros(boundary.shape[0], dtype=boundary.dtype) * sz]
+    )
+    contour = Line(coords3d, closed=True, c="tomato", lw=4)
+    pts = Points(coords3d, r=8, c="navy")
+
+    plotter = Plotter(title=f"{region_name} (typical @ section {section})", bg="white", size=(900, 900))
+    plotter.show([contour, pts], axes=1, viewup="z")
+
+
+def show_boundary_stack_vedo(boundaries, region_name: str, spacing=(1.0, 1.0, 1.0)):
+    """Show all section boundaries stacked along z (scaled by spacing)."""
+    sz, sy, sx = spacing
+    actors = []
+    for sec, verts in boundaries:
+        coords3d = np.column_stack(
+            [verts[:, 0] * sx, verts[:, 1] * sy, np.full(len(verts), float(sec) * sz)]
+        )
+        contour = Line(coords3d, closed=True, c="tomato", lw=2)
+        contour.alpha(0.65)
+        contour.name = f"{region_name}@{sec}"
+        actors.append(contour)
+
+    plotter = Plotter(title=f"{region_name} boundary stack", bg="white", size=(1000, 900))
+    plotter.show(actors, axes=1, viewup="z")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", default="/home/confetti/data/dk/MD594/MD594_annotation.csv", help="Path to MD594_annotation.csv")
     ap.add_argument("--name",default='7N', help="Brain region name (e.g., IC)")
-    ap.add_argument("--section", default=176 , type=int, help="Section number")
+    ap.add_argument("--section" , type=int, help="Section number")
+    ap.add_argument("--start-section", type=int, default=149,help="Start section (inclusive) for typical boundary search")
+    ap.add_argument("--end-section", type=int, default=201,help="End section (inclusive) for typical boundary search")
+    ap.add_argument("--spacing", nargs=3, type=float, metavar=("Z", "Y", "X"), default=(20,0.5,0.5), help="Voxel spacing as z y x")
+    ap.add_argument("--show-stack", action="store_true", help="Display all section boundaries stacked in vedo")
     args = ap.parse_args()
 
     df = load_and_prepare(args.csv)
-    show_region(df, args.name, args.section)
+    if args.show_stack:
+        boundaries = extract_boundary_stack(df, args.name)
+        show_boundary_stack_vedo(boundaries, args.name, spacing=tuple(args.spacing))
+    elif args.start_section is not None and args.end_section is not None:
+        boundary, section = extract_typical_boundary(df, args.name, args.start_section, args.end_section)
+        show_boundary_vedo(boundary, args.name, section, spacing=tuple(args.spacing))
+    else:
+        show_region(df, args.name, args.section)
 
 
 if __name__ == "__main__":

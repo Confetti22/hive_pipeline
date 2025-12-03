@@ -4,7 +4,7 @@ import os
 # Get the path to the parent directory of 'test', which is 'project'
 project_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_dir)
-from lib.arch.ae import build_cmpsd_model,load_compose_encoder_dict,build_encoder_model,load_encoder2encoder
+from lib.arch.ae_old import build_final_model,load_compose_encoder_dict,build_encoder_model,load_encoder2encoder
 from config.load_config import load_cfg
 from helper.ncut_helper import segment_and_plot_from_feats 
 from torchsummary import summary
@@ -14,7 +14,7 @@ print(f'{os.getcwd()}=')
 args = load_cfg('../config/t11_3d.yaml')
 args.avg_pool_size = (8,8,8) 
 
-cmpsd_model = build_cmpsd_model(args)
+cmpsd_model = build_final_model(args)
 cmpsd_model.eval().to(device)
 cnn_ckpt_pth = '/home/confetti/data/weights/t11_3d_ae_best2.pth'
 mlp_ckpt_pth ='/home/confetti/data/weights/t11_3d_mlp_best_new_format.pth'
@@ -33,8 +33,8 @@ weights = Inception_V3_Weights.DEFAULT
 incep_model = models.inception_v3(weights = weights, progress =True)
 incep_model.eval()
 incep_model.to(device)
-print(incep_model)
-summary(incep_model,(3,1536,1536))
+# print(incep_model)
+# summary(incep_model,(3,1536,1536))
 
 #%%
 import torch
@@ -49,7 +49,7 @@ roi_offset =[6980,3425,4040]
 # roi_offset =[7000,2813,3474]
 roi_size =[64,1536,1536]
 vol = ims_vol.from_roi(coords=[*roi_offset,*roi_size],level=0)
-# vol = tif.imread('/home/confetti/data/t1779/test_data_part_brain/0003.tif')
+vol = tif.imread('/home/confetti/data/t1779/test_data_part_brain/0003.tif')
 
 input = vol[32]
 normalized_img = (((input -input.min())/ (input.max() - input.min())) * 255).astype(np.uint8)

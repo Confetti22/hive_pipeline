@@ -12,6 +12,7 @@ from skimage.restoration import denoise_tv_chambolle
 from helper.napari_view_utilis import _filter_layer_name_with_pattern
 from helper.mask_erosion import erode_labels, relabel_sequential
 from scipy.ndimage import maximum_filter, zoom
+from skimage.segmentation import expand_labels
 
 import numpy as np
 import torch
@@ -182,8 +183,8 @@ def load_t1779(region_key: str = "2_3"):
     gt = np.squeeze(gt) if gt is not None else None
 
     if region_key in ['1_1','2_1','3_1','1_2','1_3']:
-        dilation_radius = 28
-        label= maximum_filter(label, size=2 * dilation_radius + 1, mode="nearest")
+        dilation_radius = 12
+        label = expand_labels(label,dilation_radius)
 
     if DOWNSAMPLE is True:
         if len(roi.shape) ==3:
@@ -378,8 +379,8 @@ def train_and_eval_widget(
 
 
 for arch in ['inception_v3','dpt']:
-    # for key in get_path_map().keys():
-    for key in ['1_1','2_1','3_1']:
+    for key in get_path_map().keys():
+    # for key in ['1_1','2_1','3_1']:
         state = {
         "roi": None,              # np.ndarray (H,W) or (D,H,W)
         "labels": None,           # np.ndarray same shape as roi
