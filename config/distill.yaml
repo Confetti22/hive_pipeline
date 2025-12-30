@@ -5,7 +5,7 @@ teacher_dir: /home/confetti/e5_workspace/hive1/models/facebook/dinov3-vits16-pre
 # teacher_dir: /share/home/shiqiz/workspace/hive1/models/facebook/dinov3-vits16-pretrain-lvd1689m
 
 # Checkpoint path for loading model weights (only used when teacher_dir points to a .pth file)
-ckpt_path: '/home/confetti/e5_workspace/hive1_pipeline/runs/finetune_checkpoints/dinov3_epoch_004.pth'
+# ckpt_path: '/home/confetti/e5_workspace/hive1_pipeline/runs/finetune_checkpoints/dinov3_epoch_004.pth'
 
 # Provide explicit paths (files or directories)
 
@@ -15,21 +15,22 @@ train_paths: [
               # "/share/home/shiqiz/data/wide_filed/vsi_train",   #8323 items
               # '/share/home/shiqiz/data/rm009/boundary_seg/new_boundary_seg_data/z_slices',  #51649
 
-              # '/home/confetti/data/t1779/z_slices_512_512', #15924 items
+              '/home/confetti/data/t1779/z_slices_512_512', #15924 items
               # "/home/confetti/data/wide_filed/vsi_train",   #8323 items
-              '/home/confetti/data/rm009/boundary_seg/new_boundary_seg_data/z_slices',   #25824#
+              # '/home/confetti/data/rm009/boundary_seg/new_boundary_seg_data/z_slices',   #25824#
 ]
 
 # train_paths: ['/home/confetti/data/rm009/boundary_seg/new_boundary_seg_data/1zmlp_rois']
 # train_paths: ['/share/home/shiqiz/data/rm009/boundary_seg/new_boundary_seg_data/z_slices']
 
 # Student
-student_type: tinyvit # or cnn
+student_type: tinyvit # or tinyvit
 tinyvit_input_type: rgb # or grayscale (only used when student_type: tinyvit)
-tinyvit_implementation: None # or timm (only used when student_type: tinyvit)
+tinyvit_implementation: timm # or timm (only used when student_type: tinyvit)
 
 # Data Preprocessing
 crop_size: null # Optional central crop size (e.g., 224, 256, 512). If null, no cropping is applied.
+use_mixup:  False # Apply mixup augmentation with coefficients sampled uniformly from [0,1]
 
 # TinyViT Model Architecture (only used when student_type: tinyvit)
 tinyvit_depth: 12 # Number of transformer layers (6-24 recommended)
@@ -43,7 +44,7 @@ student_feature_layers: [2,5,12]  # Which student layers to extract features fro
 
 # Loss Weight Configuration
 lambda_feat: 1.0    # Weight for feature mimicry loss (cosine similarity)
-lambda_aff: 0.1    # Weight for affinity preservation loss (local structure)
+lambda_aff: 0    # Weight for affinity preservation loss (local structure)
 
 # Feature Loss Type Configuration
 feature_loss_type: cosine # Options: "cosine" (default) or "mse" for direct MSE loss without normalization
@@ -53,17 +54,15 @@ use_spatial_coords: false
 # Optimization
 batch_size: 16
 epochs: 500
-lr: 0.001
+lr: 0.0005
 weight_decay: 0.05
 num_workers: 4
 
 # Learning Rate Scheduler
-scheduler_type: cosine_warmup  # Options: cosine, step, exponential, cosine_warmup, none
+scheduler_type: None # Options: cosine, step, exponential, cosine_warmup, None
 scheduler_warmup_epochs: 5     # Number of warmup epochs (only used with cosine_warmup)
 scheduler_min_lr: 1e-6         # Minimum learning rate (used with cosine schedulers)
 
 # Model Saving
 save_every_epoch: 5           # Save student weights every N epochs (0 to disable)
-save_dir: ./runs/distill_from_finetuned_dinov3_cosine_timm # Directory to save model checkpoints
-
-
+save_dir: ./runs/_distill_cnn_test10_tinyvittimm_mullayer_nomixup_cosine_proj_t1779 # Directory to save model checkpoints

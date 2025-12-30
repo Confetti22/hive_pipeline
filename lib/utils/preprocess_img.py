@@ -32,7 +32,8 @@ def preprocess_uint16_for_imagenet(
     img: np.ndarray,
     *,
     make_3ch: bool = True,
-    robust_percentiles: Optional[Tuple[float, float]] = (1.0, 99.9),
+    #eailer setting for percentiles is [1,99.9], which is inappropriate for lower values in visor image 
+    robust_percentiles: Optional[Tuple[float, float]] = (0.0, 99.9),
     log_transform: bool = False,
     gamma: Optional[float] = None,
     clamp01_after_rescale: bool = True,

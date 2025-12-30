@@ -1,0 +1,37 @@
+teacher_dir: /home/confetti/e5_workspace/hive1/models/facebook/dinov3-vits16-pretrain-lvd1689m
+ckpt_path: /home/confetti/e5_workspace/hive1_pipeline/runs/finetune_checkpoints/dinov3_epoch_004.pth
+
+# Use a handful of grayscale slices to keep the sanity check fast.
+train_paths:
+  - /home/confetti/data/rm009/boundary_seg/new_boundary_seg_data/z_slices/0001_z000.tiff
+  - /home/confetti/data/rm009/boundary_seg/new_boundary_seg_data/z_slices/0001_z004.tiff
+  - /home/confetti/data/rm009/boundary_seg/new_boundary_seg_data/z_slices/0001_z009.tiff
+  - /home/confetti/data/rm009/boundary_seg/new_boundary_seg_data/z_slices/0001_z011.tiff
+
+student_type: cnn
+tinyvit_input_type: rgb
+tinyvit_implementation: local
+
+# Keep memory/lightning requirements small for a quick run.
+crop_size: 224
+use_mixup: false
+
+teacher_feature_layers: [2, 6, 11]
+student_feature_layers: [2, 6, 11]
+lambda_feat: 1.0
+lambda_aff: 0.1
+feature_loss_type: cosine
+use_spatial_coords: false
+
+batch_size: 2
+epochs: 1
+lr: 0.001
+weight_decay: 0.05
+num_workers: 0
+
+scheduler_type: none
+scheduler_warmup_epochs: 0
+scheduler_min_lr: 1e-6
+
+save_every_epoch: 0
+save_dir: ./runs/distill_cnn_test

@@ -44,10 +44,8 @@ class GrayTiffDataset(Dataset):
         """
         path = self.paths[idx]
         img = tiff.imread(path)
-        if idx == 0:
-            print(f"Original image shape: {img.shape}")
 
-        if len(img.shape) == 3:
+        if len(img.shape) == 3:  # only load the first slice if img is a 3d volume 
             img = img[0]
         
         # Apply central crop if specified

@@ -1,7 +1,6 @@
 from .data import GrayTiffDataset, to_rgb_for_vit
 from .teacher import TeacherDinoV3
 from .student import TinyViTWithTaps, TinyViTWithTapsGray, TinyViTWithTapsRGB, tokens_from_cnn_bottleneck
-from .tinyvit import TinyViT, TinyViTGray, TinyViTRGB
 from .losses import FeatureMimicCosine, AffinityLoss
 from .distiller import Distiller
 

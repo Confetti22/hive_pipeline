@@ -29,27 +29,24 @@ Dependencies
 
 
 from __future__ import annotations
+import numpy as np
+import torch
+import torch.nn.functional as F
+from collections import defaultdict
+from typing import Dict, Any, Tuple, Optional
+
 
 import os
 import sys
-import math
-from functools import reduce
-from operator import mul
-from dataclasses import dataclass
 from typing import  List, Optional, Sequence, Tuple, Union
-from torchsummary import summary
 from skimage.restoration import denoise_tv_chambolle
 from helper.napari_view_utilis import _filter_layer_name_with_pattern
-from helper.mask_erosion import erode_labels, relabel_sequential
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
-import torchvision.models as models
-from torchvision.models import Inception_V3_Weights
-from torchvision.transforms import GaussianBlur
 from scipy.ndimage import zoom
 
 import napari
@@ -481,7 +478,7 @@ def pad_to_multiple(img: np.ndarray, x: int, dims:int,mode: str = "constant") ->
 
 def _uses_imagenet_preproc(model_name: str) -> bool:
     """Return True if the model expects ImageNet-style 3-channel normalized input."""
-    return model_name in {"DPT", "inception_v3", "inception_v3_single", "inception_v3_preavg_single"}
+    return model_name in {'s_tinyvit', 's_tinyvittimm', "DPT", "inception_v3", "inception_v3_single", "inception_v3_preavg_single"}
 
 
 def _ensure_tensor_chw_or_cdhw(img: np.ndarray, dims: int,model_name:str) -> torch.Tensor:
@@ -646,303 +643,6 @@ def pad_volume_to_window(volume: np.ndarray, window: Sequence[int]) -> Tuple[np.
 # Model registry & builders
 # ----------------------------------
 
-@dataclass
-class Modelsegmodel:
-    name: str
-    dims: int
-    seg_model: nn.Module
-    n_classes: int
-
-
-class SimpleSegmodel(nn.Module):
-    def __init__(self, encoder: nn.Module, seg_head: nn.Module):
-        super().__init__()
-        self.cmpsd_encoder = encoder
-        self.seg_head = seg_head
-        self.feature_map = None  # avoid attribute errors when accessed after eval
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: 3D case -> [B, C, D, H, W]; 2D case -> [B, C, H, W]
-        Returns:
-            logits tensor shaped like seg_head output
-        """
-        features = self.cmpsd_encoder(x)
-
-
-        out = self.seg_head(features)
-        out = F.interpolate(out,tuple(x.shape[2:]),mode='trilinear',align_corners=False)
-
-        # If you only want to cache feature maps during eval:
-        if not self.training and hasattr(self, "compute_feature_map"):
-            # NOTE: adjust this to whatever shape your compute_feature_map expects
-            self.feature_map = self.compute_feature_map(features, x.shape[2:])
-
-        return out
-
-    
-    def compute_feature_map(self,features,spatial_shape):
-        up = F.interpolate(features,tuple(spatial_shape),mode='trilinear', align_corners=False)
-        up= up.squeeze(0).cpu().numpy() # [C,D,H,W]
-        up = np.moveaxis(up ,0,-1)  #[D,H,W,C]
-        return up
-    
-    
-    def get_feature_map(self):
-        if not self.training:
-            return self.feature_map
-        else:
-            return None
-
-
-class InceptionBackbone(nn.Module):
-    """InceptionV3 feature extractor that returns multi-scale feature maps."""
-
-    def __init__(self, weights: Optional[Inception_V3_Weights] = Inception_V3_Weights.IMAGENET1K_V1):
-        super().__init__()
-        use_aux = weights is not None
-        base = models.inception_v3(weights=weights, aux_logits=use_aux, transform_input=False)
-        self.conv1 = base.Conv2d_1a_3x3
-        self.conv2 = base.Conv2d_2a_3x3
-        self.conv3 = base.Conv2d_2b_3x3
-        self.conv4 = base.Conv2d_3b_1x1
-        self.conv5 = base.Conv2d_4a_3x3
-        self.block5 = nn.Sequential(base.Mixed_5b, base.Mixed_5c, base.Mixed_5d)
-        self.block6 = nn.Sequential(base.Mixed_6a, base.Mixed_6b, base.Mixed_6c, base.Mixed_6d, base.Mixed_6e)
-        self.block7 = nn.Sequential(base.Mixed_7a, base.Mixed_7b, base.Mixed_7c)
-        self.out_channels = [192, 288, 768, 2048]
-
-    def forward(self, x: torch.Tensor) -> List[torch.Tensor]:
-        feats: List[torch.Tensor] = []
-        x = self.conv1(x)
-        x = self.conv2(x)
-        x = self.conv3(x)
-        x = F.max_pool2d(x, kernel_size=3, stride=2)
-        x = self.conv4(x)
-        x = self.conv5(x)
-        feats.append(x)  # 71x71
-        x = F.max_pool2d(x, kernel_size=3, stride=2)
-        x = self.block5(x)
-        feats.append(x)  # 35x35
-        x = self.block6(x)
-        feats.append(x)  # 17x17
-        x = self.block7(x)
-        feats.append(x)  # 8x8
-        return feats
-
-
-class InceptionSegHead(nn.Module):
-    """Lightweight multi-scale fusion head similar in spirit to the DPT head."""
-
-    def __init__(self, in_channels: Sequence[int], n_classes: int, proj_dim: int = 128, fuse_dim: int = 128):
-        super().__init__()
-        self.projects = nn.ModuleList([
-            nn.Sequential(
-                nn.Conv2d(ch, proj_dim, kernel_size=1, bias=False),
-                nn.ReLU(inplace=True),
-            )
-            for ch in in_channels
-        ])
-        self.fuse = nn.Sequential(
-            nn.Conv2d(proj_dim * len(in_channels), fuse_dim, kernel_size=3, padding=1, bias=False),
-            nn.ReLU(inplace=True),
-        )
-        self.classifier = nn.Conv2d(fuse_dim, n_classes, kernel_size=1)
-
-    def forward(self, feats: Sequence[torch.Tensor], return_fused: bool = False):
-        target_hw = feats[0].shape[-2:]
-        processed: List[torch.Tensor] = []
-        for feat, proj in zip(feats, self.projects):
-            x = proj(feat)
-            if x.shape[-2:] != target_hw:
-                x = F.interpolate(x, size=target_hw, mode="bilinear", align_corners=False)
-            processed.append(x)
-
-        fused = torch.cat(processed, dim=1)
-        fused = self.fuse(fused)
-        logits = self.classifier(fused)
-
-        if return_fused:
-            return logits, fused
-        return logits
-
-
-class InceptionSegModel(nn.Module):
-    def __init__(self, backbone: InceptionBackbone, head: InceptionSegHead):
-        super().__init__()
-        self.backbone = backbone
-        self.head = head
-        self.feature_map: Optional[np.ndarray] = None
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        feats = self.backbone(x)
-        if self.training:
-            logits = self.head(feats, return_fused=False)
-            fused = None
-        else:
-            logits, fused = self.head(feats, return_fused=True)
-
-        logits = F.interpolate(logits, size=x.shape[-2:], mode="bilinear", align_corners=False)
-
-        if (not self.training) and fused is not None:
-            self.feature_map = self._to_feature_map(fused, x.shape[-2:])
-
-        return logits
-
-    def _to_feature_map(self, fused: torch.Tensor, spatial_shape: Tuple[int, int]) -> np.ndarray:
-        print(f"in inception_v3: {fused.shape= }, {spatial_shape= }")
-        #in inception_v3: fused.shape= torch.Size([1, 128, 92, 92]) B*C*H*W, spatial_shape= torch.Size([384, 384])
-        blur = GaussianBlur(kernel_size=11,sigma=4) 
-        fused = blur(fused)
-
-        up = F.interpolate(fused, size=spatial_shape, mode="bilinear", align_corners=False)
-        
-        up = up.detach().cpu().permute(0, 2, 3, 1).contiguous().numpy()
-        return np.squeeze(up)
-
-    def get_feature_map(self):
-        if not self.training:
-            return self.feature_map
-        return None
-
-
-def build_cmpsd(dims: int, n_classes: int,) -> Modelsegmodel:
-    """Build cmpsd backbone + ConvSegHead.
-
-    Args:
-        dims: 2 or 3
-        n_classes: number of output classes (incl. background)
-        feat_channels: channels produced by backbone
-    Returns:
-        Modelsegmodel
-    """
-    level_key = 'l2'
-    filters_map={'l1':[32,24,12,12],'l2':[64,32,24,12],'l3':[96,64,32,12]}
-    cnn_filters_map ={'l1':[32],'l2':[32,64],'l3':[32,64,96]}
-    cnn_kernler_size_map ={'l1':[5],'l2':[5,5],'l3':[5,5,3]}
-
-    from config.load_config import load_cfg
-    cfg = load_cfg('/home/confetti/e5_workspace/hive1/outs/contrastive_run_rm009/ae_mlp_rm009_v1/FEATl2_avg8_LOSSpostopk_numparis16384_batch4096_nview4_d_near6_shuffle20_cosdecay_valide_with_avgpool/config.yaml')
-    cfg.in_channel = 1
-    cfg.filters = cnn_filters_map[level_key] 
-    cfg.kernel_size =cnn_kernler_size_map[level_key]
-    cfg.mlp_filters = filters_map[level_key]
-    cfg.last_encoder =False 
-    cfg.avg_pool_size = [8,8,8]
-
-    #todo: try different mlp weights at different epoch: 50, 200, 2000
-    from lib.arch.ae_old import build_final_model,load_compose_encoder_dict
-    cmpsd_model = build_final_model(cfg)
-    cmpsd_model.eval()
-
-    for param in cmpsd_model.parameters():
-        param.requires_grad = False
-
-    cnn_ckpt_pth = "/home/confetti/data/weights/ae_feats_nissel_v1_roi1_decaylr_e1600.pth"
-    mlp_ckpt_pth = "/home/confetti/e5_workspace/hive1/outs/contrastive_run_rm009/ae_mlp_rm009_v1/FEATl2_avg8_LOSSpostopk_numparis16384_batch4096_nview4_d_near6_shuffle20_cosdecay_valide_with_avgpool/checkpoints/epoch_4000.pth"
-    mlp_ckpt = torch.load(mlp_ckpt_pth)['model']
-    load_compose_encoder_dict(cmpsd_model,cnn_ckpt_pth,mlp_weight_dict=mlp_ckpt,dims=dims) #this pretrained model is 3d
-
-    from lib.arch.ae import ConvMLP
-    seg_head = ConvMLP(filters=[12,12,n_classes],l2_norm=False,last_act=False,dims=dims).train() 
-    seg_model = SimpleSegmodel(cmpsd_model,seg_head)
-
-
-    cnn_ckpt = torch.load(cnn_ckpt_pth)
-    print(f"\n\n{cnn_ckpt.keys()}= ")
-    print(f"\n\n{mlp_ckpt.keys()}= ")
-    print(f"\n\n{seg_model}")
-    # summary(seg_model,(1,64,64,64))
-     
-
-    print("\n","unfrozen model's layer name",[f"{n}" for n, p in seg_model.named_parameters() if  p.requires_grad],"\n")
-
-    return Modelsegmodel("cmpsd", 3 ,seg_model,n_classes)
-
-
-def build_inception_v3(dims: int, n_classes: int) -> Modelsegmodel:
-    """Build inception_v3 backbone + lightweight multi-scale seg head."""
-    if dims != 2:
-        raise ValueError("inception_v3 model currently supports 2D inputs only.")
-
-    try:
-        backbone = InceptionBackbone(Inception_V3_Weights.IMAGENET1K_V1)
-    except Exception as exc:
-        print(f"Falling back to randomly initialized InceptionV3 weights due to: {exc}")
-        backbone = InceptionBackbone(weights=None)
-
-    backbone.eval()
-    for p in backbone.parameters():
-        p.requires_grad = False
-
-    head = InceptionSegHead(backbone.out_channels, n_classes=n_classes, proj_dim=128, fuse_dim=128)
-    seg_model = InceptionSegModel(backbone, head)
-    seg_model.train()
-    seg_model.backbone.eval()
-
-    print("\n", "unfrozen model's layer name", [f"{n}" for n, p in seg_model.named_parameters() if p.requires_grad], "\n")
-
-    return Modelsegmodel("inception_v3", dims, seg_model, n_classes)
-
-
-from lib.arch.segdino import DPT,Dinov3HFBackbone
-from transformers import AutoModel
-
-def build_dpt(dims: int, n_classes: int, ) -> Modelsegmodel:
-    """Build DPT with DINOv3-like backbone + DPTHead.
-
-    Notes:
-        - For dims=3, we evaluate per-slice; backbone remains 2D.
-        - seghead expects 2D features; for 3D ROI we loop slices externally.
-    """
-
-    model_dir = "/home/confetti/e5_workspace/hive1/models/facebook/dinov3-vits16-pretrain-lvd1689m"# ViT-S/16 (patch=16)
-    hf_backbone = AutoModel.from_pretrained(
-        model_dir, local_files_only=True, output_hidden_states=True
-    ).eval()
-    backbone = Dinov3HFBackbone(hf_backbone)
-    seg_model = DPT(nclass=n_classes,backbone=backbone)
-    seg_model.train()
-
-    #freeze backbone
-    seg_model.lock_backbone()
-
-    print("\n","unfrozen model's layer name",[f"{n}" for n, p in seg_model.named_parameters() if  p.requires_grad],"\n")
-
-    return Modelsegmodel("DPT", dims,seg_model,n_classes)
-
-def build_and_load_weights_dpt(dims: int, n_classes: int, ) -> Modelsegmodel:
-    """Build DPT with DINOv3-like backbone + DPTHead.
-
-    Notes:
-        - For dims=3, we evaluate per-slice; backbone remains 2D.
-        - seghead expects 2D features; for 3D ROI we loop slices externally.
-    """
-
-    model_dir = "/home/confetti/e5_workspace/hive1/models/facebook/dinov3-vits16-pretrain-lvd1689m"# ViT-S/16 (patch=16)
-    hf_backbone = AutoModel.from_pretrained(
-        model_dir, local_files_only=True, output_hidden_states=True
-    )
-    backbone = Dinov3HFBackbone(hf_backbone)
-    seg_model = DPT(nclass=n_classes,backbone=backbone)
-    # ckpt= torch.load("/home/confetti/e5_workspace/hive1/outs/seg_dino/seg_dino_1zmip/model_epoch_3.pth")
-    ckpt= torch.load("/home/confetti/e5_workspace/hive1/outs/seg_dino/seg_dino_nomask_with_layer2_5_8_11_metrics_batch16_1zmip/model_epoch_30.pth")
-    weights = ckpt['seg_model']
-
-    result = seg_model.load_state_dict(weights)
-    print(result)
-
-    #freeze backbone
-    seg_model.lock_backbone()
-    seg_model.eval()
-
-    print("\n","unfrozen model's layer name",[f"{n}" for n, p in seg_model.named_parameters() if  p.requires_grad],"\n")
-
-    return Modelsegmodel("DPT", dims,seg_model,n_classes)
-
-
-
 # ----------------------------------
 # Training/evaluation helpers
 # ----------------------------------
@@ -957,6 +657,7 @@ def one_hot(labels: torch.Tensor, n_classes: int) -> torch.Tensor:
     return F.one_hot(labels.long(), num_classes=n_classes).permute(0, -1, *range(1, labels.dim())).float()
 
 
+from lib.arch.segmodel import Modelsegmodel
 def train_seghead(segmodel: Modelsegmodel,
                   dataset: Dataset,
                   n_classes: int,
@@ -1038,17 +739,6 @@ def train_seghead(segmodel: Modelsegmodel,
 
 
 
-
-
-
-import numpy as np
-import torch
-import torch.nn.functional as F
-from skimage.restoration import denoise_tv_chambolle
-from collections import defaultdict
-from typing import Dict, Any, Tuple, Optional
-
-
 # -------------------------------------------------------------
 #  Blend weight generators
 # -------------------------------------------------------------
@@ -1072,7 +762,7 @@ def _make_blend_weight_3d(d: int, h: int, w: int) -> np.ndarray:
     weight = 1.0 - dist
     return weight.astype(np.float32)
 
-def _run_single_2d(segmodel, image, device, capture_features, tv_weight):
+def _run_single_2d(segmodel:Modelsegmodel, image, device, capture_features, tv_weight):
     """
     Run full-image 2D inference, exactly reproducing the logic from your
     original eval_full_roi() 2D no-tile branch.
@@ -1083,8 +773,8 @@ def _run_single_2d(segmodel, image, device, capture_features, tv_weight):
     probs = F.softmax(logits, dim=0).cpu().numpy()
 
     # optional TV denoise
-    if tv_weight > 0:
-        probs = denoise_tv_chambolle(probs, weight=tv_weight, channel_axis=0)
+    # if tv_weight > 0:
+    #     probs = denoise_tv_chambolle(probs, weight=tv_weight, channel_axis=0)
 
     pred = np.argmax(probs, axis=0) + 1
 
@@ -1472,6 +1162,7 @@ def add_ui(viewer: napari.Viewer) -> None:
 
 
     # --- Build model button ---
+    from lib.arch.segmodel import build_cmpsd, build_dpt, build_inception_v3
     @magicgui(call_button="Build Model",
               arch={"choices": ["cmpsd", "DPT", "inception_v3"]})
     def build_model_widget(arch: str = "DPT"):

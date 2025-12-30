@@ -17,18 +17,20 @@ sys.path.insert(0, project_dir)
 import argparse
 from pathlib import Path
 from typing import List
-
+from torchsummary import summary
 import yaml
 import torch
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 
 from lib.distill import (
     GrayTiffDataset,
     Distiller,
 )
 
+from lib.distill.student import build_student_cnn
 
-def _validate_paths(paths: List[str]) -> List[str]:
+def _validate_paths(paths: List[str], max_count: int | None = None) -> List[str]:
     files: List[str] = []
     for p in paths:
         pp = Path(p)
@@ -38,7 +40,11 @@ def _validate_paths(paths: List[str]) -> List[str]:
             files.extend([str(f) for f in pp.rglob('*.tiff')])
         elif pp.is_file():
             files.append(str(pp))
-    return sorted(files)
+    files = sorted(files)
+    if max_count is not None:
+        files = files[:max_count]
+        print(f"[DATA] Limiting to first {len(files)} files for this run")
+    return files
 
 
 def main():
@@ -50,7 +56,10 @@ def main():
         cfg = yaml.safe_load(f) or {}
 
     raw_paths = cfg.get('train_paths', [])
-    train_paths = _validate_paths(raw_paths)
+    max_train_samples = cfg.get('max_train_samples', None)
+    if max_train_samples is not None:
+        max_train_samples = int(max_train_samples)
+    train_paths = _validate_paths(raw_paths, max_train_samples)
     if not train_paths:
         raise SystemExit("[ERR] No training images found. Provide train_paths (files or directories) in the config.")
     teacher_dir = cfg['teacher_dir']
@@ -83,6 +92,7 @@ def main():
     scheduler_type = cfg.get('scheduler_type', 'cosine')
     scheduler_warmup_epochs = int(cfg.get('scheduler_warmup_epochs', 5))
     scheduler_min_lr = float(cfg.get('scheduler_min_lr', 1e-6))
+    use_mixup = bool(cfg.get('use_mixup', False))
     
     # Model saving configuration
     save_every_epoch = int(cfg.get('save_every_epoch', 0))
@@ -109,15 +119,15 @@ def main():
     dl = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
 
     # Build student CNN when requested; users should provide a factory in their codebase
-    def _build_student_cnn():
-        from helper.model_basic import build_semantic_seg_model  # user-defined
-        return build_semantic_seg_model()
+
+
+    
 
     distiller = Distiller(
         teacher_dir=teacher_dir,
         ckpt_path=ckpt_path,
         student_type=student_type,
-        student_cnn_builder=_build_student_cnn if student_type == 'cnn' else None,
+        student_cnn_builder= build_student_cnn(model_type='simple') if student_type == 'cnn' else None,
         tinyvit_input_type=tinyvit_input_type,
         tinyvit_implementation=tinyvit_implementation,
         tinyvit_depth=tinyvit_depth,
@@ -131,6 +141,17 @@ def main():
         use_spatial_coords=use_spatial_coords,
         feature_loss_type=feature_loss_type,
     ).to(device)
+
+    from lib.distill.teacher import count_model_size
+    count_model_size(distiller.teacher)
+
+    count_model_size(distiller.student)
+
+    print(distiller.student)
+    # summary(distiller.student, (3, 256, 256))
+    writer = SummaryWriter(log_dir= save_dir)
+
+    
 
     # Log configuration
     print(f"[CONFIG] Student type: {student_type}")
@@ -148,6 +169,7 @@ def main():
     print(f"[CONFIG] Feature loss type: {feature_loss_type}")
     print(f"[CONFIG] Use spatial coords: {use_spatial_coords}")
     print(f"[CONFIG] Crop size: {crop_size if crop_size is not None else 'None (no cropping)'}")
+    print(f"[CONFIG] Mixup: {'enabled' if use_mixup else 'disabled'}")
     print(f"[CONFIG] Batch size: {batch_size}, Epochs: {epochs}, LR: {lr}")
     print(f"[CONFIG] Scheduler: {scheduler_type}, Warmup epochs: {scheduler_warmup_epochs}, Min LR: {scheduler_min_lr}")
     
@@ -158,7 +180,18 @@ def main():
         print(f"[CONFIG] CUDA Device: {torch.cuda.get_device_name()}")
         print(f"[CONFIG] CUDA Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
 
-    optim = torch.optim.AdamW(distiller.student.parameters(), lr=lr, weight_decay=wd)
+    from itertools import chain
+
+    adapter_params = chain.from_iterable(
+        adapter.parameters() for adapter in distiller.adapter
+    )
+
+    optim = torch.optim.AdamW(
+        chain(distiller.student.parameters(), adapter_params),
+        lr=lr,
+        weight_decay=wd,
+    )
+
     scaler = torch.amp.GradScaler('cuda', enabled=False)  # Disabled mixed precision training
     
     # Create learning rate scheduler
@@ -190,15 +223,22 @@ def main():
     distiller.student.train()
 
     for ep in range(epochs):
-        for batch_idx, (x_gray, image_ids) in enumerate(dl):
-            x_gray = x_gray.to(device, non_blocking=True)
+        for batch_idx, (x_rgb, image_ids) in enumerate(dl):
+            x_rgb = x_rgb.to(device, non_blocking=True)
+            if use_mixup:
+                # Mixup coefficients sampled uniformly in [0, 1]
+                lam = torch.rand(x_rgb.size(0), device=device, dtype=x_rgb.dtype).view(-1, 1, 1, 1)
+                perm = torch.randperm(x_rgb.size(0), device=device)
+                x_rgb = lam * x_rgb + (1 - lam) * x_rgb[perm]
+
+
             optim.zero_grad(set_to_none=True)
-            
+
             # Debug: Check input dtype before distiller
             if ep == 0 and batch_idx == 0:
-                print(f"[DEBUG] - Input to distiller dtype: {x_gray.dtype}")
+                print(f"[DEBUG] - Input to distiller dtype: {x_rgb.dtype}")
             
-            out = distiller(x_gray, image_ids)
+            out = distiller(x_rgb, image_ids)
             loss = out['loss']
             
             # Debug: Check intermediate results
@@ -218,6 +258,8 @@ def main():
         
         current_lr = optim.param_groups[0]['lr']
         print(f"[distill] epoch={ep+1:03d} loss={loss.item():.4f} L_feat={out['L_feat'].item():.4f} L_aff={out['L_aff'].item():.4f} lr={current_lr:.6f}")
+
+        writer.add_scalar("train/distill_loss", out['L_feat'].item(), ep)
         
         # Save student weights at specified intervals
         if save_every_epoch > 0 and (ep + 1) % save_every_epoch == 0:
@@ -234,5 +276,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-

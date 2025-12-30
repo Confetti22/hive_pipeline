@@ -12,6 +12,17 @@ from .student import TinyViTWithTaps, TinyViTWithTapsTimm, tokens_from_cnn_bottl
 from .losses import FeatureMimicCosine, FeatureMimicMSE, AffinityLoss
 
 
+class BilinearResize(nn.Module):
+    """Resize spatial feature maps with bilinear interpolation."""
+
+    def __init__(self, output_size: Tuple[int, int]):
+        super().__init__()
+        self.output_size = output_size
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return F.interpolate(x, size=self.output_size, mode="bilinear", align_corners=False)
+
+
 class Distiller(nn.Module):
     """
     Knowledge distillation module that transfers knowledge from a teacher DINOv3 model to a student model.
@@ -54,6 +65,7 @@ class Distiller(nn.Module):
         super().__init__()
         # Initialize teacher model (DINOv3) - frozen during training
         self.teacher = TeacherDinoV3(teacher_dir,ckpt_path)
+        self.teacher_patch = 16  # ViT-S/16 default patch size
         # Convert 1-based tap indices to 0-based for internal use
         self.taps_t = [k - 1 for k in teacher_feature_layers]
         self.taps_s = [k - 1 for k in student_feature_layers]
@@ -69,6 +81,7 @@ class Distiller(nn.Module):
         if student_type == "cnn":
             assert student_cnn_builder is not None, "Provide student_cnn_builder(args)->model"
             self.student = student_cnn_builder()
+
             self.feat_mode = "vit2cnn"  # Different normalization for CNN features
         else:
             # Choose TinyViT implementation
@@ -81,7 +94,7 @@ class Distiller(nn.Module):
                     depth=tinyvit_depth,
                     embed_dim=tinyvit_embed_dim,
                     num_heads=tinyvit_num_heads,
-                    mlp_ratio=tinyvit_mlp_ratio
+                    mlp_ratio=tinyvit_mlp_ratio,
                 )
             else:
                 # Use local TinyViT implementation (default)
@@ -97,9 +110,14 @@ class Distiller(nn.Module):
             self.student.register_taps(self.taps_s)
             self.feat_mode = "vit2vit"
 
-        self.adapter: Optional[nn.Module] = None
         self.coord_proj: Optional[nn.Linear] = None
         self.spatial_adapter: Optional[nn.Module] = None
+        if student_type == 'cnn':
+            self.adapter = nn.Identity() if self.student.embed_dim == self.teacher.embed_dim else nn.Linear(self.student.embed_dim, self.teacher.embed_dim, bias=False)
+            self.adapter = [self.adapter]
+        else:
+            self.adapter = nn.Linear(self.student.embed_dim, self.teacher.embed_dim, bias=False)
+            self.adapter = nn.ModuleList([self.adapter] * len(self.taps_s)) 
         
         # Initialize feature loss based on type
         if feature_loss_type.lower() == "mse":
@@ -108,36 +126,6 @@ class Distiller(nn.Module):
             self.feat_loss = FeatureMimicCosine(mode=self.feat_mode)
         
         self.aff_loss = AffinityLoss(anchors=64, window=7)
-
-    def _maybe_build_adapter(self, student_dim: int, device: torch.device):
-        """
-        Builds a linear adapter to match student feature dimensions to teacher dimensions.
-        
-        Args:
-            student_dim: Dimension of student features
-            device: Device to move the adapter to
-        """
-        tdim = self.teacher.embed_dim
-        if self.adapter is None:
-            # Use identity if dimensions already match, otherwise use linear projection
-            self.adapter = nn.Identity() if student_dim == tdim else nn.Linear(student_dim, tdim, bias=False)
-            # Move adapter to the correct device
-            self.adapter = self.adapter.to(device)
-
-    def _maybe_build_coord_proj(self, device: torch.device):
-        """
-        Builds a linear projection layer for spatial coordinate embeddings.
-        
-        Projects 2D spatial coordinates (x, y) to the teacher's embedding dimension.
-        This allows the model to learn spatial relationships in the feature space.
-        
-        Args:
-            device: Device to move the coordinate projection to
-        """
-        if self.coord_proj is None:
-            self.coord_proj = nn.Linear(2, self.teacher.embed_dim, bias=False)
-            # Move coordinate projection to the correct device
-            self.coord_proj = self.coord_proj.to(device)
 
     def _maybe_build_spatial_adapter(self, student_spatial: Tuple[int, int], teacher_spatial: Tuple[int, int], device: torch.device):
         """
@@ -148,11 +136,18 @@ class Distiller(nn.Module):
             teacher_spatial: (height, width) of teacher feature maps
             device: Device to move the spatial adapter to
         """
-        if self.spatial_adapter is None and student_spatial != teacher_spatial:
-            # Use adaptive pooling to match spatial dimensions
-            self.spatial_adapter = nn.AdaptiveAvgPool2d(teacher_spatial)
-            # Move spatial adapter to the correct device
-            self.spatial_adapter = self.spatial_adapter.to(device)
+        if student_spatial == teacher_spatial:
+            self.spatial_adapter = None
+            return
+        # Recreate adapter if target size changes
+        if (
+            self.spatial_adapter is None
+            or getattr(self.spatial_adapter, "output_size", None) != teacher_spatial
+        ):
+            if student_spatial[0] <= teacher_spatial[0] and student_spatial[1] <= teacher_spatial[1]:
+                self.spatial_adapter = BilinearResize(teacher_spatial).to(device)
+            else:
+                self.spatial_adapter = nn.AdaptiveAvgPool2d(teacher_spatial).to(device)
 
     @staticmethod
     def _add_token_coords(toks: torch.Tensor) -> torch.Tensor:
@@ -215,29 +210,23 @@ class Distiller(nn.Module):
             bottleneck, _ = self.student(x_in)
             b, cs, h, w = bottleneck.shape
             
-            # Build dimension adapter if needed
-            self._maybe_build_adapter(cs, device)
-            
             # Convert CNN features to token format
             toks = tokens_from_cnn_bottleneck(bottleneck)
-            toks = self.adapter(toks)
+            toks = self.adapter[0](toks)
             
             # Handle spatial resolution differences
             student_spatial = (h, w)
-            teacher_spatial = (14, 14)  # DINOv3 ViT-S/16 default
+            teacher_spatial = (
+                math.ceil(x_in.shape[-2] / self.teacher_patch),
+                math.ceil(x_in.shape[-1] / self.teacher_patch),
+            )
             self._maybe_build_spatial_adapter(student_spatial, teacher_spatial, device)
             if self.spatial_adapter is not None:
                 # Reshape back to spatial format for pooling
                 toks_spatial = toks.reshape(b, h, w, -1).permute(0, 3, 1, 2)
                 toks_spatial = self.spatial_adapter(toks_spatial)
                 toks = toks_spatial.permute(0, 2, 3, 1).reshape(b, -1, toks.shape[-1])
-            
-            # Add spatial coordinate embeddings if enabled
-            if self.use_spatial_coords:
-                self._maybe_build_coord_proj(device)
-                coord_feats = self._add_token_coords(toks)
-                toks = toks + self.coord_proj(coord_feats)
-            
+
             # Return same features for all taps (CNN has single bottleneck)
             return [toks for _ in self.taps_s]
         else:
@@ -245,17 +234,8 @@ class Distiller(nn.Module):
             toks_list = self.student.forward_tokens(x_in, self.taps_s)
             
             # Build dimension adapter if needed
-            self._maybe_build_adapter(self.student.embed_dim, device)
-            toks_list = [self.adapter(t) for t in toks_list]
+            toks_list = [adapter(t) for adapter,t in zip(self.adapter,toks_list)]
             
-            # Add spatial coordinate embeddings if enabled
-            if self.use_spatial_coords:
-                self._maybe_build_coord_proj(device)
-                out_list: List[torch.Tensor] = []
-                for t in toks_list:
-                    coord_feats = self._add_token_coords(t)
-                    out_list.append(t + self.coord_proj(coord_feats))
-                toks_list = out_list
             
             return toks_list
 
@@ -301,9 +281,9 @@ class Distiller(nn.Module):
         
         The complete workflow:
         1. Convert grayscale input to RGB for teacher
-        2. Normalize inputs with ImageNet mean/std
-        3. Extract teacher features (with caching)
-        4. Extract student features (with dimension/spatial alignment)
+        2. Normalize inputs with ImageNet mean/std, perform mixup if set
+        3. Extract teacher features 
+        4. Extract student features (with dimension/spatial alignment if needed)
         5. Compute distillation losses
         
         Args:
@@ -325,5 +305,3 @@ class Distiller(nn.Module):
         loss, lfeat, laff = self.compute_losses(s_list, t_list)
         
         return {"loss": loss, "L_feat": lfeat, "L_aff": laff}
-
-

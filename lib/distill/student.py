@@ -3,8 +3,11 @@ from typing import Dict, List, Optional
 
 import torch
 import torch.nn as nn
-from .tinyvit import TinyViT, TinyViTGray, TinyViTRGB
+from lib.arch.tinyvit import TinyViT, TinyViTGray, TinyViTRGB
+from lib.arch.ae import make_block
 
+
+from torchvision.models import shufflenet_v2_x0_5, ShuffleNet_V2_X0_5_Weights
 try:
     import timm
     TIMM_AVAILABLE = True
@@ -12,9 +15,139 @@ except ImportError:
     TIMM_AVAILABLE = False
 
 
+
+class ShuffleNetConv5Hook(nn.Module):
+    """
+    Wraps torchvision ShuffleNetV2 x0.5, adds emb_dim=1024,
+    and captures the output of `backbone.conv5` using a forward hook.
+    """
+
+    def __init__(self,  detach_hook: bool = False):
+        super().__init__()
+
+        weights = ShuffleNet_V2_X0_5_Weights.DEFAULT 
+        self.backbone = shufflenet_v2_x0_5(weights=weights)
+
+        self.embed_dim = 1024
+        self.detach_hook = detach_hook
+
+        self.conv5_feat: torch.Tensor | None = None
+        self._hook_handle = self.backbone.conv5.register_forward_hook(self._save_conv5)
+
+    def _save_conv5(self, module: nn.Module, inp: tuple[torch.Tensor, ...], out: torch.Tensor):
+        # "after conv5" output; typically shape [B, 1024, H', W']
+        self.conv5_feat = out.detach() if self.detach_hook else out
+
+    def forward(self, x: torch.Tensor, return_conv5: bool = True):
+        self.conv5_feat = None  # avoid accidentally using stale features
+        logits = self.backbone(x)
+        if return_conv5:
+            return self.conv5_feat, logits
+        return logits
+
+    def remove_hook(self) -> None:
+        if self._hook_handle is not None:
+            self._hook_handle.remove()
+            self._hook_handle = None
+
+
+class simple_cnn_embed(nn.Module):
+    """
+    update 2025/12/24, add 
+    update 2025/12/23
+    adpated from lib.arch.ae.EncoderND, change return format as bottlenect, _
+    """
+    def __init__(self, in_channel, filters, kernel_size, dims=3,
+                 pad_mode='reflect', act_mode='elu', norm_mode='gn',
+                 block_type='simple',
+                 downsample_strategy='conv_stride'):  # 'conv_stride' or 'max_pool'
+        super().__init__()
+        assert downsample_strategy in ('conv_stride', 'max_pool'), \
+            "downsample_strategy must be 'conv_stride' or 'max_pool'"
+
+        self.dim =dims 
+        self.depth = len(filters)
+        self.downsample_strategy = downsample_strategy
+
+        Pool = nn.MaxPool3d if dims== 3 else nn.MaxPool2d
+        Conv = nn.Conv3d if dims== 3 else nn.Conv2d
+        self.embed_dim = filters[-1]
+        self.shared_kwargs = {
+            'pad_mode': pad_mode,
+            'act_mode': act_mode,
+            'norm_mode': norm_mode
+        }
+
+        self.down_layers = nn.ModuleList()
+
+        # ---- Stage 0: former conv_in, now a down_layer (single block, no padding) ----
+        k0 = kernel_size[0]
+
+        if self.downsample_strategy == 'conv_stride':
+            stage0 = make_block(in_channel, filters[0], k0, stride=2,
+                                block_type=block_type, dim=dims, trans=False,
+                                shared_kwargs=self.shared_kwargs)
+        else:
+            stage0_block = make_block(in_channel, filters[0], k0, stride=1,
+                                      block_type=block_type, dim=dims, trans=False,
+                                      shared_kwargs=self.shared_kwargs)
+            stage0 = nn.Sequential(stage0_block, Pool(kernel_size=2, stride=2))
+
+        self.down_layers.append(stage0)
+
+        # ---- Stages 1..depth-1 ----
+        for i in range(self.depth - 1):
+            ks = kernel_size[min(i + 1, len(kernel_size) - 1)]
+
+            if self.downsample_strategy == 'conv_stride':
+                block = make_block(filters[i], filters[i + 1], ks, stride=2,
+                                   block_type=block_type, dim=dims, trans=False,
+                                   shared_kwargs=self.shared_kwargs)
+                stage = block
+            else:
+                block = make_block(filters[i], filters[i + 1], ks, stride=1,
+                                   block_type=block_type, dim=dims, trans=False,
+                                   shared_kwargs=self.shared_kwargs)
+                if i == self.depth - 1 -1:
+                    stage = block
+                else:
+                    stage = nn.Sequential(block, Pool(kernel_size=2, stride=2))
+
+            self.down_layers.append(stage)
+
+
+    def forward(self, x):
+        for layer in self.down_layers:
+            x = layer(x)
+        return x, None 
+
+
+def build_simple_cnn_embed():
+    model = simple_cnn_embed(in_channel=3,block_type='double',filters=[16,32,64,128],kernel_size=[7,5,5,3],dims=2,downsample_strategy='conv_stride')
+    return model
+
+def buil_shufflelnet():
+    model = ShuffleNetConv5Hook()
+    return model
+
 def tokens_from_cnn_bottleneck(bottleneck: torch.Tensor) -> torch.Tensor:
     b, c, h, w = bottleneck.shape
     return bottleneck.permute(0, 2, 3, 1).reshape(b, h * w, c)
+
+
+
+def build_student_cnn(model_type='simple'):
+    model_list =['depthwise','shufflnet','simple'] 
+    assert model_type in model_list
+
+    if model_type =='depthwise':
+        from lib.arch.cnn import build_s_cnn
+        return build_s_cnn()
+    if model_type =='shufflnet':
+        return buil_shufflelnet
+    if model_type =='simple':
+        return build_simple_cnn_embed 
+
 
 
 class TinyViTWithTaps(nn.Module):
@@ -162,6 +295,7 @@ class TinyViTWithTapsTimm(nn.Module):
             pretrained=pretrained,
             num_classes=0,  # No classification head needed
             img_size=None,  # Flexible input size
+            dynamic_img_size=True,
         )
         
         # Always use RGB input for timm models
@@ -223,5 +357,22 @@ class TinyViTWithTapsTimm(nn.Module):
         
         # Return captured tokens
         return [self.tokens[i] for i in tap_blocks_0based]
+
+
+#adapter for DPT (return extracted multilayer features )
+class TinyVitBackbone(nn.Module):
+    def __init__(self, model: TinyViTWithTaps|TinyViTWithTapsTimm ,patch_size: int = 16,):
+        super().__init__()
+        self.model = model.eval()
+        self.patch_size = patch_size                            
+        self.embed_dim = model.embed_dim
+    
+    @torch.no_grad()
+    def get_intermediate_layers(self, x: torch.Tensor, n):
+        return self.model.forward_tokens(x,n)
+
+
+
+
 
 

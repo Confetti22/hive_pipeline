@@ -77,10 +77,8 @@ class Dinov3HFBackbone(nn.Module):
     def forward(self, x: torch.Tensor):
         out = self.model(pixel_values=x, output_hidden_states=False, return_dict=True)
         return out.last_hidden_state  # [B, 1+HW, C]
-    
 
-
-
+     
 def _make_scratch(in_shape, out_shape, groups=1, expand=False):
     scratch = nn.Module()
     out_shape1 = out_shape
@@ -176,11 +174,12 @@ class DPT(nn.Module):
     def forward(self, x):
         patch_h, patch_w = x.shape[-2] // 16, x.shape[-1] // 16
         features = self.backbone.get_intermediate_layers(
-            x, n = self.intermediate_layer_idx[self.encoder_size]
+            x, 
+            n = self.intermediate_layer_idx[self.encoder_size],
         )
-        #extract the feature for visualization
+        #extract the feature for visualization in eval mode
         if not self.training:
-            self.feature_map = self.compute_feature_map_pca(features, patch_h, patch_w)
+            self.feature_map = self.compute_feature_map(features, patch_h, patch_w)
 
         out = self.head(features, patch_h, patch_w)
         out = F.interpolate(out, (patch_h * 16, patch_w * 16), mode='bilinear', align_corners=True)
@@ -265,7 +264,28 @@ class DPT(nn.Module):
 
             # Move to CPU NumPy (as requested) and PCA to top-k
             x_np = x2d.detach().to("cpu", non_blocking=True).float().numpy()
-            x_pca = _pca_numpy(x_np, k=pcs_per_layer)  # (M, k)
+            from sklearn.decomposition import PCA
+            from sklearn.preprocessing import StandardScaler
+
+            # 1) (Usually) standardize features first
+            # print("X shape:", x_np.shape)
+            # print("per-feature variance (min/mean/max):", np.var(x_np, axis=0).min(), np.var(x_np, axis=0).mean(), np.var(x_np, axis=0).max())
+            # print("unique rows:", np.unique(x_np, axis=0).shape[0])
+
+
+            scaler = StandardScaler()
+            x_std = scaler.fit_transform(x_np)
+            # print(f"Feature std after standardization: {X_std.std(axis=0)}")
+
+            # 2) PCA: keep k components
+            pca = PCA(n_components=0.85, svd_solver='full')
+            x_pca = pca.fit_transform(x_std)
+
+            print(f"n_components chosen to explain 85% variance: {pca.n_components_}")
+            # print(f"Explained variance ratio of selected components: {pca.explained_variance_ratio_}")
+
+            if x_pca.mean() == 0.0:
+                print("PCA feature all zero!")
             reduced_list.append(x_pca)
 
         # Concatenate along feature/channel dimension: (M, k*L)
@@ -291,6 +311,8 @@ class DPT(nn.Module):
         up = up.permute(0, 2, 3, 1).contiguous().cpu().numpy()  # (B, 16*H, 16*W, C)
         # remove trivial B dim
         up = np.squeeze(up)
+        if up.mean() == 0.0:
+            print("feature map all zero!")
 
         return up
 
@@ -300,3 +322,6 @@ class DPT(nn.Module):
             return self.feature_map
         else:
             return None
+
+
+
