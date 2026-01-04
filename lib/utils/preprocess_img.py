@@ -1,6 +1,6 @@
 from __future__ import annotations
 import numpy as np
-from typing import Tuple, Optional
+from typing import Tuple, Optional,Sequence
 import numpy as np
 import torch
 from skimage import exposure
@@ -172,3 +172,65 @@ def preprocess_uint8rgb_for_imagenet(img: np.ndarray) -> torch.Tensor:
     if len(arr.shape ) == 3:
         tensor = tensor.unsqueeze(1)  # [3,1,H,W]
     return tensor
+
+
+
+def pad_volume_to_window(volume: np.ndarray, window: Sequence[int]) -> Tuple[np.ndarray, Tuple[int, int, int]]:
+    """Pad a (D,H,W) volume so each dim is a multiple of the window size."""
+    if len(window) != 3:
+        raise ValueError("Window must have three dimensions for (D,H,W) volumes.")
+
+    D, H, W = volume.shape
+    wd, wh, ww = window
+
+    if wd <= 0 or wh <= 0 or ww <= 0:
+        raise ValueError("Window dimensions must be positive.")
+
+    pad_d = (wd - (D % wd)) % wd
+    pad_h = (wh - (H % wh)) % wh
+    pad_w = (ww - (W % ww)) % ww
+
+    if pad_d == pad_h == pad_w == 0:
+        return volume, (0, 0, 0)
+
+    padded = np.pad(volume,
+                    ((0, pad_d), (0, pad_h), (0, pad_w)),
+                    mode="constant", constant_values=0)
+    return padded, (pad_d, pad_h, pad_w)
+
+def pad_to_multiple(img: np.ndarray, x: int, dims:int,mode: str = "constant") -> np.ndarray:
+    """
+    Pad an image so that all dimensions are an integral multiple of x.
+    
+    Args:
+        img (np.ndarray): Input image, shape (H, W) or (D, H, W).
+        x (int): The multiple to pad each dimension to.
+        mode (str): Padding mode for np.pad (default: "constant").
+        **kwargs: Extra arguments passed to np.pad, e.g. constant_values=0.
+    
+    Returns:
+        np.ndarray: Padded image with shape being multiples of x.
+    """
+
+    shape = img.shape
+    pad_width = []
+    
+    for dim in shape:
+        remainder = dim % x
+        if remainder == 0:
+            pad_width.append([0,0])
+        else:
+            pad_width.append([0, x - remainder])
+    
+    # do not padd the RGB channel dim
+    if img.shape[-1] ==3:
+        pad_width[-1] = [0,0]
+
+    #do not padd the depth, typical usful for forward in 2d model like dino
+    if dims == 3:
+        pad_width[0] =[0,0]
+    
+    padded = np.pad(img, pad_width, mode=mode)
+    return padded
+
+

@@ -29,32 +29,27 @@ Dependencies
 
 
 from __future__ import annotations
-import numpy as np
-import torch
-import torch.nn.functional as F
-from collections import defaultdict
-from typing import Dict, Any, Tuple, Optional
-
-
 import os
 import sys
-from typing import  List, Optional, Sequence, Tuple, Union
-from skimage.restoration import denoise_tv_chambolle
-from helper.napari_view_utilis import _filter_layer_name_with_pattern
-
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
-from scipy.ndimage import zoom
+from typing import Dict, Any, Tuple, Optional, Sequence, Tuple
+from collections import defaultdict
 
 import napari
+from time import time
 from magicgui import magicgui
 from qtpy.QtWidgets import QMessageBox
+ 
+from skimage.restoration import denoise_tv_chambolle
+from helper.napari_view_utilis import _filter_layer_name_with_pattern
+from lib.utils.preprocess_img import  preprocess_uint16_for_imagenet, preprocess_uint8rgb_for_imagenet, pad_to_multiple
+from lib.datasets.sparse_label_dataset import SparseLabelSegDataset
+
 from confettii.plot_helper import three_pca_as_rgb_image
 from confettii.grah_cut import n_cut
-from time import time
 # ----------------------------------
 # Project bootstrap (repo root import)
 # ----------------------------------
@@ -64,316 +59,6 @@ NAPARI = True
 PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_DIR not in sys.path:
     sys.path.insert(0, PROJECT_DIR)
-
-# ----------------------------------
-# Optional / project-local imports
-# ----------------------------------
-from lib.arch.seg import ConvSegHead  # your lightweight head for cmpsd
-from lib.arch.segdino import DPTHead  # your DPT seghead
-from config.load_config import load_cfg
-from helper.image_reader import wrap_image
-from scipy.ndimage import zoom
-# ----------------------------------
-# Dataset & utilities
-# ----------------------------------
-
-from typing import Optional, Tuple, Dict, Any
-
-from lib.utils.preprocess_img import  preprocess_uint16_for_imagenet, preprocess_uint8rgb_for_imagenet
-
-import numpy as np
-from sklearn.manifold import TSNE
-import matplotlib.pyplot as plt
-from helper.contrastive_train_helper import class_balance
-import tifffile as tif
-
-def load_DKROI():
-    rois = []
-    for idx in range(149,201):
-        roi = tif.imread(f"/home/confetti/data/dk/MD594/MD594/{idx}.tif")
-        offset = [13200,30000]
-        size = [2400,2400]
-        roi = roi[offset[0]:offset[0]+size[0],offset[1]:offset[1]+size[1],:]
-        roi = zoom(roi,(0.2,0.2,1),order=1)
-        h, w = roi.shape[:2]
-        trim_h = h % 16
-        trim_w = w % 16
-        roi = roi[:h -trim_h, :w-trim_w, :]
-        rois.append(roi)
-    roi = np.array(rois)
-    label,mask = None,None
-    return roi,label,mask
-
-def load_3d_rm009():
-    "the training dataset is from  z55200-z67800 (1um) ,  transfer to 4um space is from Z13800~Z16950"
-    "the testing dataset is from  z68100-z69600, transfer to 4um space is Z17025-Z17400 "
-    "here load a vol seperated from training range"
-    #13750 is the first slice ahead of 55200 and is the 5th in 4um
-    vol = tif.imread("/home/confetti/data/rm009/rm009_roi/4/Z13750_C4.tif")
-    # vol = tif.imread("/home/confetti/data/rm009/rm009_roi/z16200_z16276C4_d76_h3500_w5250.tif")
-    h,w = vol.shape
-    print(f"rm009{vol.shape= }")
-    # vol = vol[:,:int(h//2),int(w//2):]
-    vol = np.squeeze(vol)
-    label, mask = None,None
-    return vol, label,mask
-
-def get_path_map():
-    path_map ={}
-
-    #parent_dir for 'roi' 'mask' and 'gt' is parent1
-    parent1='/home/confetti/data/t1779/scenes'
-    
-    #parent_dir for 'label','pca','pred' is parent2
-    parent2 = '/home/confetti/data/t1779/scenes/results'
-    #from t1779 dataset
-    path_map['1_1'] = {
-        'roi': "hp_off7000_2962_4452_sieze1536_1536_12.tif",
-        'mask': None,
-        'label': 'hp_label.tif',
-        'pca':'hp_pca.tif',
-        'pred':'hp_pred.tif',
-        'pca_incep':'hp_pca_inception_sliding_win.tif',
-        'pred_incep':'hp_predict_inception.tif',
-        'gt':'1_1_gt.tif',
-    }
-    path_map['1_2'] = {
-        'roi': "vii_1536_1536_83.tif",
-        'mask': None,
-        'label': '7N_label.tif',
-        'pca':'7N_pca.tif',
-        'pred':'7N_pred.tif',
-        'pca_incep':'7N_pca_inception_sliding_win.tif',
-        'pred_incep':'7N_pred_inception.tif',
-        'gt':'1_2_gt.tif',
-    }
-    path_map['1_3'] = {
-        'roi': "visa_1536_1536_12.tif",
-        'mask': 'visa_mask.tif',
-        'label': 'visa_label.tif',
-        'pca':'visa_pca.tif',
-        'pred':'visa_pred.tif',
-        'pca_incep':'visa_pca_inception_sliding_win.tif',
-        'pred_incep':'visa_pred_inceptionv3.tif',
-        'gt':'1_3_gt.tif',
-
-    }
-
-
-    # from wide field dataset
-
-    path_map['2_1'] = {
-        'roi': "wf_hp_1536_1536.tif",
-        'mask': None,
-        'label': 'wf_hp_label.tif',
-        'pca':'wf_hp_pca.tif',
-        'pred':'wf_hp_pred.tif',
-        'gt':'2_1_gt.tif',
-    }
-    path_map['2_2'] = {
-        'roi': "wf_viin_1536_1536.tif",
-        'mask': None,
-        'label': 'wf_7n_label.tif',
-        'pca':'wf_7n_pca.tif',
-        'pred':'wf_7n_pred.tif',
-        'gt':'2_2_gt.tif',
-    }
-    path_map['2_3']={
-        'roi': "wf_visa_1536_1536.tif",
-        'mask': 'wf_visa_mask.tif',
-        'label': 'wf_visa_label.tif',
-        'pca':'wf_visa_pca.tif',
-        'pred':'wf_visa_pred.tif',
-        'gt':'2_3_gt.tif',
-    }
-    #from DK dataset
-
-    path_map['3_1'] = {
-        'roi': "dk_hp_roi.tif",
-        'mask': None,
-        'label':'dk_hp_label.tif',
-        'pca':'dk_hp_pca.tif',
-        'pred':'dk_hp_pred.tif',
-        'gt':'3_1_gt.tif',
-    }
-    path_map['3_2'] = {
-        'roi': "dk_vii_roi.tif",
-        'mask': None,
-        'label':'dk_7N_label.tif',
-        'pca':'dk_7N_pca.tif',
-        'pred':'dk_7N_pred.tif',
-        'gt':'3_2_gt.tif',
-    }
-    path_map['3_3']={
-        'roi': "dk_vis_roi.tif",
-        'mask': 'dk_vis_mask.tif',
-        'label':'dk_vis_label.tif',
-        'pca':'dk_vis_pca.tif',
-        'pred':'dk_vis_pred.tif',
-        'gt':'3_3_gt.tif',
-    }
-
-
-    return path_map
-
-def load_t1779_2():
-    #load a vol around hp
-    offset =[7000,2700,3600]
-    size = [512,2048,4096]
-    image_vol = wrap_image("/home/confetti/mnt/data/VISoR_Reconstruction/SIAT_SIAT/BiGuoqiang/Mouse_Brain/20210131_ZSS_USTC_THY1-YFP_1779_1/Reconstruction_1.0/z00000_c1.ims.part")
-    roi = image_vol.from_roi(coords=[*offset, *size],level=0,channel=2)
-    roi = zoom(roi,(0.25,0.25,0.25),order=1)
-    label,mask = None, None
-    return roi, label, mask
-
-def load_t1779_3():
-    #load a 3d version of '1_3'
-    from helper.image_reader import Ims_Image 
-    ims_vol =Ims_Image('/home/confetti/e5_data/t1779/t1779.ims',channel=2)
-    roi_offset =[6980,3425,4040]
-    roi_size =[64,1536,1536]
-    roi = ims_vol.from_roi(coords=[*roi_offset,*roi_size],level=0)
-    label= np.zeros_like(roi)
-    mask = np.zeros_like(roi)
-    return roi, label,mask
-
-
-
-def load_t1779_1(region_key: str = "2_3",three_d=False):
-    """
-    if thee_d is True, will not using mip
-
-    """
-
-    # mask_vol = tif.imread("/home/confetti/data/t1779/register_data_roi/cp_mask_reduced.tif") 
-    # mask = mask_vol[5]
-    # eroded_mask = erode_labels(mask,width=70)
-    # relabelled_mask,mappings = relabel_sequential(eroded_mask)
-
-    print(f"{region_key= }")
-    path_map = get_path_map()
-
-    if region_key not in path_map:
-        raise ValueError(f"Unknown region_key '{region_key}'. Available: {list(path_map.keys())}")
-
-    parent_dir = '/home/confetti/data/t1779/scenes'
-    roi_path = f"{parent_dir}/{path_map[region_key]['roi']}"
-    label_path = f"{parent_dir}/{path_map[region_key]['label']}" if path_map[region_key]['label'] is not None else None
-    mask_path = f"{parent_dir}/{path_map[region_key]['mask']}" if path_map[region_key]['mask'] is not None else None
-
-    roi_vol = tif.imread(roi_path)
-    roi = np.max(roi_vol,axis=0)  if (len(roi_vol.shape) ==3 and roi_vol.shape[-1] != 3 and not three_d) else roi_vol
-    # roi = roi_vol[0]
-    roi = np.squeeze(roi)
-    
-    label = tif.imread(label_path) if label_path is not None else  None
-    label = np.squeeze(label) if label is not None else None
-    mask = tif.imread(mask_path) if mask_path is not None else None
-    mask = np.squeeze(mask) if mask is not None else None   
-    if DOWNSAMPLE is True:
-        roi = zoom(roi, zoom=0.25, order=1)  # downsample to 0.5x for faster testing
-        label = zoom(label, zoom=0.25, order=0)  if label is not None else None
-        mask = zoom(mask, zoom=0.25, order=0)  if mask is not None else None
-    if three_d:
-        z = roi.shape[0]
-        half_z = int(z/2)
-        lz = half_z
-        rz = half_z if z%2==0 else half_z -1
-
-        if label is not None:
-            if label.ndim == 2:
-                label = label[None, ...]
-            label = np.pad(label, ((lz, rz), (0, 0), (0, 0)), mode="constant", constant_values=0)
-        if mask is not None:
-            if mask.ndim == 2:
-                mask = mask[None, ...]
-            mask = np.pad(mask, ((lz, rz), (0, 0), (0, 0)), mode="constant", constant_values=1)
-
-    return roi , label,mask
-
-
-
-
-def pca_fvol_to_rgb_gpu(feats_list, final_image_shape, device="cuda"):
-    """
-    GPU-accelerated PCA on fvol flattened features.
-    
-    Input:
-        feats_list: (N, C) np.ndarray
-        final_image_shape: tuple -> reshaped into (*shape, 3)
-
-    Output:
-        rgb_vis: (*final_image_shape, 3) normalized to [0,1]
-    """
-
-    N, C = feats_list.shape
-
-    # If channels <= 3: reshape directly
-    if C <= 3:
-        rgb = torch.from_numpy(feats_list).to(device=device, dtype=torch.float32)
-        rgb = rgb.reshape(*final_image_shape, C)
-        rgb = rgb - rgb.min()
-        if rgb.max() > 0:
-            rgb = rgb / rgb.max()
-        return rgb.cpu().numpy()
-
-    # ---------------------------------------------------------
-    # 1. Move to GPU
-    # ---------------------------------------------------------
-    X = torch.from_numpy(feats_list).to(device=device, dtype=torch.float32)  # [N, C]
-
-    # ---------------------------------------------------------
-    # 2. Center the data
-    # ---------------------------------------------------------
-    mean = X.mean(dim=0, keepdim=True)
-    Xc = X - mean  # [N, C]
-
-    # ---------------------------------------------------------
-    # 3. SVD decomposition (Xc = U S Vh)
-    #     Vh.shape = (C, C), top 3 PCs = Vh[:3]
-    # ---------------------------------------------------------
-    # Unlike CPU PCA, torch.linalg.svd is already optimized & GPU-friendly.
-    U, S, Vh = torch.linalg.svd(Xc, full_matrices=False)
-
-    # PCs = Xc @ Vh[:3].T → yields (N, 3)
-    PCs = Xc @ Vh[:3].T   # [N, 3]
-
-    # ---------------------------------------------------------
-    # 4. Normalize result to 0–1
-    # ---------------------------------------------------------
-    pcs_min = PCs.min(dim=0).values
-    pcs_max = PCs.max(dim=0).values
-    denom = (pcs_max - pcs_min).clamp(min=1e-8)
-    PCs_norm = (PCs - pcs_min) / denom  # [N, 3]
-
-    # ---------------------------------------------------------
-    # 5. Reshape to final image shape
-    # ---------------------------------------------------------
-    rgb_vis = PCs_norm.reshape(*final_image_shape, 3)
-
-    # Bring back to CPU as numpy
-    return rgb_vis.cpu().numpy()
-
-
-
-
-def tsne_plot(feats,labels):
-
-
-    labels = np.array(labels)
-    mask = labels > 0
-    feats_flat = feats[mask]
-    labels_flat = labels[mask]
-
-    blced_feats, blced_labels = class_balance(feats_flat, labels_flat,n_per_class=200)
-
-    tsne_model = TSNE(n_components=2, perplexity=20, random_state=42)
-    reduced_data = tsne_model.fit_transform(blced_feats)
-
-    fig,ax = plt.subplots(figsize=(8,8))
-    scatter = ax.scatter(reduced_data[:, 0], reduced_data[:, 1], s=1.2, c=blced_labels, cmap='tab10')
-    ax.legend(*scatter.legend_elements(), title="Digits")
-    plt.show()
 
 
 
@@ -390,7 +75,6 @@ def _round_and_clip_bbox(y0: float, x0: float, y1: float, x1: float, H: int, W: 
     if y_max <= y_min or x_max <= x_min:
         return None
     return (y_min, y_max, x_min, x_max)
-
 
 def find_valid_rectangle_bbox_from_shapes(state: Dict[str, Any]) -> Optional[Tuple[int, int, int, int]]:
     """
@@ -440,42 +124,6 @@ def find_valid_rectangle_bbox_from_shapes(state: Dict[str, Any]) -> Optional[Tup
     return None
 
 
-def pad_to_multiple(img: np.ndarray, x: int, dims:int,mode: str = "constant") -> np.ndarray:
-    """
-    Pad an image so that all dimensions are an integral multiple of x.
-    
-    Args:
-        img (np.ndarray): Input image, shape (H, W) or (D, H, W).
-        x (int): The multiple to pad each dimension to.
-        mode (str): Padding mode for np.pad (default: "constant").
-        **kwargs: Extra arguments passed to np.pad, e.g. constant_values=0.
-    
-    Returns:
-        np.ndarray: Padded image with shape being multiples of x.
-    """
-
-    shape = img.shape
-    pad_width = []
-    
-    for dim in shape:
-        remainder = dim % x
-        if remainder == 0:
-            pad_width.append([0,0])
-        else:
-            pad_width.append([0, x - remainder])
-    
-    # do not padd the RGB channel dim
-    if img.shape[-1] ==3:
-        pad_width[-1] = [0,0]
-
-    #do not padd the depth, typical usful for forward in 2d model like dino
-    if dims == 3:
-        pad_width[0] =[0,0]
-    
-    padded = np.pad(img, pad_width, mode=mode)
-    return padded
-
-
 def _uses_imagenet_preproc(model_name: str) -> bool:
     """Return True if the model expects ImageNet-style 3-channel normalized input."""
     return model_name in {'s_tinyvit', 's_tinyvittimm', "DPT", "inception_v3", "inception_v3_single", "inception_v3_preavg_single"}
@@ -523,122 +171,6 @@ def _ensure_tensor_chw_or_cdhw(img: np.ndarray, dims: int,model_name:str) -> tor
 
     return t
 
-
-class SparseLabelSegDataset(Dataset):
-    """Dataset from a single ROI and sparse integer labels.
-
-    """
-    def __init__(self,
-                 image: np.ndarray,
-                 labels: np.ndarray,
-                 dims: int = 2,
-                 patch_size: Tuple[int, ...] | None = None,
-                 imagenet_preproc: bool = False,
-                 max_samples: int = 512):
-        super().__init__()
-        self.image = image
-        self.labels = labels
-        self.dims = dims
-        self.patch_size = patch_size
-        self.samples: List[Tuple[Tuple[int, ...], Tuple[int, ...]]] = []  # (lo, hi) for slicing
-        self.imagenet_preproc = imagenet_preproc
-
-        # the location of all the labeled points
-        coords = np.column_stack(np.nonzero(labels))  # N x (2|3)
-        if coords.size == 0:
-            return
-
-
-        if dims == 2:
-            H, W  = image.shape[:2]
-            ph,pw = patch_size
-            if (H == ph and W == pw)  or (H < ph)  or  (W < pw):
-                # Use full image as one sample if reasonably sized
-                self.samples.append(((0, 0), (H, W)))
-            else:
-                for y, x in coords[::max(1, len(coords)//max_samples)]:
-                    y0 = max(0, y - ph//2); y1 = min(H, y0 + ph); y0 = y1 - ph
-                    x0 = max(0, x - pw//2); x1 = min(W, x0 + pw); x0 = x1 - pw
-                    if y0 < 0 or x0 < 0:
-                        continue
-                    self.samples.append(((y0, x0), (y1, x1)))
-        else:
-            D, H, W = image.shape[:3]
-            pd, ph, pw = patch_size
-
-            if (pd ==D and ph == H and pw == W) or (pd > D) or (ph > H) or (pw > W): 
-                # Use full image as one sample if reasonably sized
-                self.samples.append(((0, 0, 0), (D, H, W)))
-            else:
-                step = max(1, len(coords)//max_samples)
-                for z, y, x in coords[::step]:
-                    z0 = max(0, z - pd//2); z1 = min(D, z0 + pd); z0 = z1 - pd
-                    y0 = max(0, y - ph//2); y1 = min(H, y0 + ph); y0 = y1 - ph
-                    x0 = max(0, x - pw//2); x1 = min(W, x0 + pw); x0 = x1 - pw
-                    if z0 < 0 or y0 < 0 or x0 < 0:
-                        continue
-                    self.samples.append(((z0, y0, x0), (z1, y1, x1)))
-    
-
-
-    def __len__(self) -> int:
-        return int(len(self.samples))
-
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        lo, hi = self.samples[idx]
-        if self.dims == 2:
-            (y0, x0), (y1, x1) = lo, hi
-            img = self.image[y0:y1, x0:x1]
-            lab = self.labels[y0:y1, x0:x1]
-
-            if self.imagenet_preproc:
-                if len(img.shape) ==2: 
-                    x = preprocess_uint16_for_imagenet(img)  # [C,H,W]
-                else:
-                    x = preprocess_uint8rgb_for_imagenet(img)
-            else:
-                x = torch.from_numpy(img.astype(np.float32))[None]  # [1,H,W]
-            y = torch.from_numpy(lab.astype(np.int64))         # [H,W]
-        else:
-            (z0, y0, x0), (z1, y1, x1) = lo, hi
-            img = self.image[z0:z1, y0:y1, x0:x1]
-            lab = self.labels[z0:z1, y0:y1, x0:x1]
-            if self.imagenet_preproc:
-                if len(img.shape) ==3:
-                    x = preprocess_uint16_for_imagenet(img) # [C,D,H,W]
-                else:
-                    x = preprocess_uint8rgb_for_imagenet(img)
-            else:
-                x = torch.from_numpy(img.astype(np.float32))[None]  # [1,D,H,W]
-            y = torch.from_numpy(lab.astype(np.int64))          # [D,H,W]
-        
-        # remap label from 0 to N-1
-        return x, y - 1
-
-
-def pad_volume_to_window(volume: np.ndarray, window: Sequence[int]) -> Tuple[np.ndarray, Tuple[int, int, int]]:
-    """Pad a (D,H,W) volume so each dim is a multiple of the window size."""
-    if len(window) != 3:
-        raise ValueError("Window must have three dimensions for (D,H,W) volumes.")
-
-    D, H, W = volume.shape
-    wd, wh, ww = window
-
-    if wd <= 0 or wh <= 0 or ww <= 0:
-        raise ValueError("Window dimensions must be positive.")
-
-    pad_d = (wd - (D % wd)) % wd
-    pad_h = (wh - (H % wh)) % wh
-    pad_w = (ww - (W % ww)) % ww
-
-    if pad_d == pad_h == pad_w == 0:
-        return volume, (0, 0, 0)
-
-    padded = np.pad(volume,
-                    ((0, pad_d), (0, pad_h), (0, pad_w)),
-                    mode="constant", constant_values=0)
-    return padded, (pad_d, pad_h, pad_w)
-
 # ----------------------------------
 # Model registry & builders
 # ----------------------------------
@@ -646,15 +178,6 @@ def pad_volume_to_window(volume: np.ndarray, window: Sequence[int]) -> Tuple[np.
 # ----------------------------------
 # Training/evaluation helpers
 # ----------------------------------
-
-def freeze(module: nn.Module) -> None:
-    for p in module.parameters():
-        p.requires_grad = False
-
-
-def one_hot(labels: torch.Tensor, n_classes: int) -> torch.Tensor:
-    """One-hot encode labels to shape [B,C,*]."""
-    return F.one_hot(labels.long(), num_classes=n_classes).permute(0, -1, *range(1, labels.dim())).float()
 
 
 from lib.arch.segmodel import Modelsegmodel
@@ -1145,6 +668,7 @@ def add_ui(viewer: napari.Viewer) -> None:
 
     # roi,label,mask = load_3d_rm009()
     # roi,label,mask = load_DKROI() 
+    from lib.datasets.load_rois import load_t1779_3
     roi, label,mask = load_t1779_3()
     roi_shape = roi.shape[:state["dims"]]
 
@@ -1201,30 +725,31 @@ def add_ui(viewer: napari.Viewer) -> None:
 
         For dims=2, uses (patch_h, patch_w). For dims=3, uses (patch_d, patch_h, patch_w).
         """
-            # Force conversion to int
+        # Force conversion to int
         patch_d = int(patch_d)
         patch_h = int(patch_h)
         patch_w = int(patch_w)
         segmodel: Modelsegmodel = state["segmodel"]
         roi = state["roi"]
         labels = state["labels"]
+
         if segmodel is None and NAPARI:
             _ask(viewer, "Train", "Build the model first.")
             return
         if (labels is None or np.count_nonzero(labels) == 0) and NAPARI:
             _ask(viewer, "Train", "Please draw some labels on 'user_labels' layer.")
             return
+
         dims = state["dims"]
         imagenet_preproc = _uses_imagenet_preproc(segmodel.name)
 
         if dims == 2:
-            print(f"{roi.shape= }, {labels.shape= }")
             ds = SparseLabelSegDataset(roi, labels, dims=2, patch_size=(patch_h, patch_w),imagenet_preproc=imagenet_preproc)
-            # ds = SparseLabelSegDataset(roi, labels, dims=2, patch_size=None, imagenet_preproc=imagenet_preproc)
-
         else:
             ds = SparseLabelSegDataset(roi, labels, dims=3, patch_size=(patch_d, patch_h, patch_w),imagenet_preproc=imagenet_preproc)
+
         n_classes = max(2, len(np.unique(labels))-1)
+
         train_seghead(segmodel, ds, n_classes=n_classes, device="cuda" if torch.cuda.is_available() else "cpu",
                       epochs=epochs, batch_size=batch_size, lr=lr)
         # _ask(viewer, "Train", "Training finished.")
@@ -1340,12 +865,12 @@ def add_ui(viewer: napari.Viewer) -> None:
 
             flat_feat = feat.reshape(-1, C)
             if mask_bool is None:
-                rgb = pca_fvol_to_rgb_gpu(flat_feat, spatial_shape)
+                rgb = three_pca_as_rgb_image(flat_feat, spatial_shape)
             else:
                 mask_flat = mask_bool.reshape(-1)
                 rgb_flat = np.zeros((mask_flat.size, 3), dtype=np.float32)
                 if mask_flat.any():
-                    masked_rgb = pca_fvol_to_rgb_gpu(flat_feat[mask_flat], (int(mask_flat.sum()),))
+                    masked_rgb = three_pca_as_rgb_image(flat_feat[mask_flat], (int(mask_flat.sum()),))
                     rgb_flat[mask_flat] = masked_rgb.reshape(-1, 3)
                 rgb = rgb_flat.reshape(*spatial_shape, 3)
 
@@ -1445,6 +970,7 @@ def add_ui(viewer: napari.Viewer) -> None:
         print(f"Train+Eval done. eval time{end -current:.4f}, total time{end - begin:.4f}")
         
 
+    from lib.arch.segmodel import build_and_load_weights_dpt
     @magicgui(
         call_button="eval SegHead pretrained",
         **COMMON_WIDGETS
