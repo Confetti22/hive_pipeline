@@ -31,7 +31,7 @@ class SparseLabelSegDataset(Dataset):
 
         if dims == 2:
             H, W  = image.shape[:2]
-            ph,pw = patch_size
+            ph,pw = patch_size[:2]
             if (H == ph and W == pw)  or (H < ph)  or  (W < pw):
                 # Use full image as one sample if reasonably sized
                 self.samples.append(((0, 0), (H, W)))

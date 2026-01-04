@@ -1,9 +1,57 @@
 from __future__ import annotations
 import numpy as np
-from typing import Tuple, Optional,Sequence
+from typing import Tuple, Optional,Sequence,Dict, Any
 import numpy as np
 import torch
 from skimage import exposure
+def _uses_imagenet_preproc(model_name: str) -> bool:
+    """Return True if the model expects ImageNet-style 3-channel normalized input."""
+    return model_name in {'s_tinyvit', 's_tinyvittimm', "DPT", "inception_v3", "inception_v3_single", "inception_v3_preavg_single"}
+
+
+def _ensure_tensor_chw_or_cdhw(img: np.ndarray, dims: int,model_name:str) -> torch.Tensor:
+    """Convert numpy image to torch tensor with shape (B=1, C=1, H, W) or (B=1, C=1, D, H, W).
+
+    Args:
+        img: Input image with shape (H,W) or (D,H,W).
+        dims: 2 or 3.
+    Returns:
+        Torch tensor ready for model input.
+    """
+    imagenet_preproc = _uses_imagenet_preproc(model_name)
+
+    if dims == 2:  
+
+        if imagenet_preproc:              #DPT branch 
+            if len(img.shape)==2:
+                t = preprocess_uint16_for_imagenet(img)
+            else:
+                t = preprocess_uint8rgb_for_imagenet(img)
+
+
+            if t.shape[1] ==1: #DPT model avoid D 
+                t= t.squeeze(1)
+
+            t = t.unsqueeze(0) #add B
+
+        else:                             #other model 
+            t = torch.from_numpy(img.astype(np.float32))[None, None] #B*C*H*W
+    else:
+        if imagenet_preproc:
+            if len(img.shape) ==3:
+                t = preprocess_uint16_for_imagenet(img)
+            else:
+                t = preprocess_uint8rgb_for_imagenet(img)
+
+            # Keep the depth axis (even if size==1) so downstream 3D tiling logic stays consistent.
+            t = t.unsqueeze(0) #add B
+
+        else:
+            t = torch.from_numpy(img.astype(np.float32))[None,None] #B*C*D*H*W
+
+    return t
+
+
 
 
 def pad_to_multiple_of_unit(img,unit = 8):

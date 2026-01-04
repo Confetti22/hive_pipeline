@@ -1,33 +1,21 @@
-from copy import deepcopy
-from typing import Optional
+from typing import Optional, Tuple, Dict, Any
 
 import numpy as np
 
 from packaging.version import parse as parse_version
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
-    QCheckBox,
     QDoubleSpinBox,
     QPushButton,
     QSplitter,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
-from superqt.utils import qthrottled
 
 import napari
-from napari.utils.translations import trans
-
-from napari.components.layerlist import Extent
 from napari.components.viewer_model import ViewerModel
-from napari.layers import Image, Labels, Layer, Vectors
 from napari.qt import QtViewer
-from napari.utils.action_manager import action_manager
-from napari.utils.events.event import WarningEmitter
-from napari.utils.notifications import show_info
 from napari.layers.utils.layer_utils import dims_displayed_world_to_layer
-import os
 
 def _filter_layer_name_with_pattern(layers,name_patterns:list):
     layer_names=set()
@@ -35,6 +23,74 @@ def _filter_layer_name_with_pattern(layers,name_patterns:list):
         lst=[layer.name for layer  in layers if pattern in layer.name]
         layer_names.update(lst)
     return layer_names
+
+def _round_and_clip_bbox(y0: float, x0: float, y1: float, x1: float, H: int, W: int) -> Optional[Tuple[int, int, int, int]]:
+    """
+    Convert float bbox coords to int pixel indices, clipped to [0,H/W], and ensure non-empty.
+    Returns (y0, y1, x0, x1) in inclusive-exclusive indexing, or None if invalid.
+    """
+    y_min = max(0, int(np.floor(min(y0, y1))))
+    y_max = min(H, int(np.ceil(max(y0, y1))))
+    x_min = max(0, int(np.floor(min(x0, x1))))
+    x_max = min(W, int(np.ceil(max(x0, x1))))
+
+    if y_max <= y_min or x_max <= x_min:
+        return None
+    return (y_min, y_max, x_min, x_max)
+
+
+def find_valid_rectangle_bbox_from_shapes(state: Dict[str, Any]) -> Optional[Tuple[int, int, int, int]]:
+    
+    """
+    Inspect state['layers']['shapes'] (a napari Shapes layer) and extract a valid rectangle bbox
+    in pixel coords relative to the current ROI.
+    
+    Rules:
+      - Uses the last rectangle in the layer that is visible.
+      - Accepts napari rectangle data given as 4 corner vertices [[y,x], ...].
+      - Validates bbox lies within the current ROI spatial size.
+
+    Returns:
+      (y0, y1, x0, x1) in int, inclusive-exclusive indexing; or None if no valid rectangle.
+
+    Assumes:
+      - state['roi'] is an array whose first two dims are (H, W) (RGB or grayscale both fine).
+      - state['layers']['shapes'] is a napari shapes layer or None.
+    """
+    
+    layers = state.get("layers", {})
+
+    shape_layer_name_set = _filter_layer_name_with_pattern(layers,name_patterns=['Shapes'])
+    if len(shape_layer_name_set) == 0:
+        return None
+
+    shape_layer_name = next(iter(shape_layer_name_set))
+    verts = layers[shape_layer_name].data
+
+    roi = state['roi']
+
+    if roi is None:
+        return None
+
+    dims = state['dims']
+
+    if dims ==2:
+        H,W = roi.shape[:dims]
+    else:
+        D,H,W = roi.shape[:dims]
+    
+    verts = np.asarray(verts)  # expected shape (4, 2): [[y,x], ...]
+    verts = np.squeeze(verts)
+    ys = verts[:, -2]
+    xs = verts[:, -1]
+
+    bbox = _round_and_clip_bbox(ys.min(), xs.min(), ys.max(), xs.max(), H, W)
+    if bbox is not None:
+        return bbox
+
+    return None
+
+
 
 def sync_planes_pos(event, layers):
     # Get the plane position and normal from the triggering layer
