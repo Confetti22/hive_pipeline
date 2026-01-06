@@ -29,7 +29,7 @@ def train_seghead(segmodel: Modelsegmodel,
 
     #drop_last False to ensure nonempty loader when  len(ds) ==1 (this is true when input img and train_roi is the same) 
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last= False)
-    opt = torch.optim.AdamW(segmodel.seg_model.parameters(), lr=lr)
+    opt = torch.optim.AdamW((p for p in segmodel.seg_model.parameters() if p.requires_grad), lr=lr)
     
 
     class_weights = compute_class_weights_from_dataset(dataset, num_classes=n_classes,recon_target_flag=False)
@@ -77,7 +77,7 @@ def train_seghead(segmodel: Modelsegmodel,
             total_loss.backward()  # if it fails, detect_anomaly will print the offending op
             opt.step()
 
-            print(f"epoch:{n_epoch}:train_loss: {total_loss.item():.4f}  "
+            print(f"training: epoch:{n_epoch}:train_loss: {total_loss.item():.4f}  "
                     f"(ce={ce_loss.item():.4f}, dice={dice_loss.item():.4f})")
 
 

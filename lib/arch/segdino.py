@@ -81,14 +81,10 @@ class Dinov3HFBackbone(nn.Module):
      
 def _make_scratch(in_shape, out_shape, groups=1, expand=False):
     scratch = nn.Module()
-    out_shape1 = out_shape
-    out_shape2 = out_shape
-    out_shape3 = out_shape
-    out_shape4 = out_shape
-    scratch.layer1_rn = nn.Conv2d(in_shape[0], out_shape1, kernel_size=3, stride=1, padding=1, bias=False, groups=groups)
-    scratch.layer2_rn = nn.Conv2d(in_shape[1], out_shape2, kernel_size=3, stride=1, padding=1, bias=False, groups=groups)
-    scratch.layer3_rn = nn.Conv2d(in_shape[2], out_shape3, kernel_size=3, stride=1, padding=1, bias=False, groups=groups)
-    scratch.layer4_rn = nn.Conv2d(in_shape[3], out_shape4, kernel_size=3, stride=1, padding=1, bias=False, groups=groups)
+    scratch.layer_rns = nn.ModuleList([
+        nn.Conv2d(in_ch, out_shape, kernel_size=3, stride=1, padding=1, bias=False, groups=groups)
+        for in_ch in in_shape
+    ])
     return scratch
 
 class DPTHead(nn.Module):
@@ -123,26 +119,26 @@ class DPTHead(nn.Module):
         )
         self.scratch.stem_transpose = None
         self.scratch.output_conv = nn.Conv2d(features*4, nclass, kernel_size=1, stride=1, padding=0)  
-    
+
     def forward(self, out_features, patch_h, patch_w):
-        out = []
+        if len(out_features) != self.num_features:
+            raise ValueError(f"Expected {self.num_features} features, got {len(out_features)}")
+
+        processed = []
         for i, x in enumerate(out_features):
             x = x.permute(0, 2, 1).reshape((x.shape[0], x.shape[-1], patch_h, patch_w))
             x = self.projects[i](x)
-            out.append(x)
-        
-        layer_1, layer_2, layer_3, layer_4 = out
-        layer_1_rn = self.scratch.layer1_rn(layer_1)
-        layer_2_rn = self.scratch.layer2_rn(layer_2)
-        layer_3_rn = self.scratch.layer3_rn(layer_3)
-        layer_4_rn = self.scratch.layer4_rn(layer_4)
-        target_hw = layer_1_rn.shape[-2:]  
-        layer_2_up = F.interpolate(layer_2_rn, size=target_hw, mode="bilinear", align_corners=True)
-        layer_3_up = F.interpolate(layer_3_rn, size=target_hw, mode="bilinear", align_corners=True)
-        layer_4_up = F.interpolate(layer_4_rn, size=target_hw, mode="bilinear", align_corners=True)
-        fused = torch.cat([layer_1_rn, layer_2_up, layer_3_up, layer_4_up], dim=1)
-        out = self.scratch.output_conv(fused)
-        return out
+            x = self.scratch.layer_rns[i](x)
+            processed.append(x)
+
+        target_hw = processed[0].shape[-2:]
+        upsampled = [processed[0]]
+        for feat in processed[1:]:
+            upsampled.append(F.interpolate(feat, size=target_hw, mode="bilinear", align_corners=True))
+        fused = torch.cat(upsampled, dim=1)
+        return self.scratch.output_conv(fused)
+
+
 
 class DPT(nn.Module):
     def __init__(
@@ -152,7 +148,8 @@ class DPT(nn.Module):
         features=128, 
         out_channels=[96, 192, 384, 768], 
         use_bn=False,
-        backbone = None
+        backbone = None,
+        seg_head_layers = None,
     ):
         super(DPT, self).__init__()
         
@@ -164,8 +161,13 @@ class DPT(nn.Module):
         self.encoder_size = encoder_size
         self.backbone = backbone
         self.feature_map = None
-        self.head = DPTHead(nclass, self.backbone.embed_dim, features, use_bn, out_channels=out_channels)
+
+        default_layers = self.intermediate_layer_idx.get(self.encoder_size, self.intermediate_layer_idx['base'])
+        self.seg_head_layers = list(seg_head_layers) if seg_head_layers is not None else default_layers
+
+        self.head = DPTHead(nclass, self.backbone.embed_dim, features, use_bn, out_channels=seg_out_channels)
         
+
     def lock_backbone(self):
         for p in self.backbone.parameters():
             p.requires_grad = False
@@ -179,7 +181,7 @@ class DPT(nn.Module):
         )
         #extract the feature for visualization in eval mode
         if not self.training:
-            self.feature_map = self.compute_feature_map(features, patch_h, patch_w)
+            self.feature_map = self.compute_feature_map_pca(features, patch_h, patch_w)
 
         out = self.head(features, patch_h, patch_w)
         out = F.interpolate(out, (patch_h * 16, patch_w * 16), mode='bilinear', align_corners=True)
@@ -219,7 +221,7 @@ class DPT(nn.Module):
         features: List[torch.Tensor],
         patch_h: int,
         patch_w: int,
-        pcs_per_layer: int = 12 
+        pcs_per_layer: List[int] = [24,120,120,24],
     ) -> np.ndarray:
         """PCA each layer's (M, C) to top-k, concat along channel, reshape, upsample.
 
@@ -252,7 +254,7 @@ class DPT(nn.Module):
 
         reduced_list = []
         for x in features:
-            # Normalize shape to (M, C)
+           # Normalize shape to (M, C)
             if x.dim() == 3:
                 Bx, HW, C = x.shape
                 assert Bx == B and HW == patch_h * patch_w, "Feature shape mismatches patch grid"
@@ -262,30 +264,20 @@ class DPT(nn.Module):
                 assert M == M_expected, "M does not match B*patch_h*patch_w"
                 x2d = x
 
-            # Move to CPU NumPy (as requested) and PCA to top-k
-            x_np = x2d.detach().to("cpu", non_blocking=True).float().numpy()
             from sklearn.decomposition import PCA
             from sklearn.preprocessing import StandardScaler
-
-            # 1) (Usually) standardize features first
-            # print("X shape:", x_np.shape)
-            # print("per-feature variance (min/mean/max):", np.var(x_np, axis=0).min(), np.var(x_np, axis=0).mean(), np.var(x_np, axis=0).max())
-            # print("unique rows:", np.unique(x_np, axis=0).shape[0])
-
-
+            x_np = x2d.detach().to("cpu", non_blocking=True).float().numpy()
             scaler = StandardScaler()
             x_std = scaler.fit_transform(x_np)
-            # print(f"Feature std after standardization: {X_std.std(axis=0)}")
-
-            # 2) PCA: keep k components
-            pca = PCA(n_components=0.85, svd_solver='full')
-            x_pca = pca.fit_transform(x_std)
-
-            print(f"n_components chosen to explain 85% variance: {pca.n_components_}")
-            # print(f"Explained variance ratio of selected components: {pca.explained_variance_ratio_}")
-
-            if x_pca.mean() == 0.0:
-                print("PCA feature all zero!")
+            if pcs_per_layer is not None:
+                k = pcs_per_layer[len(reduced_list)]
+                pca = PCA(n_components=k)
+                x_pca = pca.fit_transform(x_std)
+            else:
+                pca = PCA(n_components=0.85, svd_solver='full')
+                x_pca = pca.fit_transform(x_std)
+                print(f"{pca.n_components_}_components  chosen to explain 85% variance: ")
+    
             reduced_list.append(x_pca)
 
         # Concatenate along feature/channel dimension: (M, k*L)

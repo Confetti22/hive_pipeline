@@ -6,6 +6,7 @@ from lib.utils.preprocess_img import preprocess_uint16_for_imagenet, preprocess_
 
 class SparseLabelSegDataset(Dataset):
     """Dataset from a single ROI and sparse integer labels.
+    update: now always accept patch_size of (d,h,w) for both 2D and 3D inputs.
 
     """
     def __init__(self,
@@ -31,7 +32,7 @@ class SparseLabelSegDataset(Dataset):
 
         if dims == 2:
             H, W  = image.shape[:2]
-            ph,pw = patch_size[:2]
+            ph,pw = patch_size[1:]
             if (H == ph and W == pw)  or (H < ph)  or  (W < pw):
                 # Use full image as one sample if reasonably sized
                 self.samples.append(((0, 0), (H, W)))

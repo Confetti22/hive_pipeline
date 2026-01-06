@@ -61,24 +61,29 @@ def _model_forward(segmodel: Modelsegmodel, tile_img: np.ndarray, device: str) -
         B, C, D, H, W = x.shape
         x2d = x.permute(0, 2, 1, 3, 4).reshape(B * D, C, H, W)
         logits2d = segmodel.seg_model(x2d)
-        logits = logits2d.reshape(B, D, -1, H, W).permute(0, 2, 1, 3, 4)
+        logits = logits2d.reshape(B, D, -1, H, W).permute(0, 2, 1, 3, 4)  # B,C,D,H,W
     else:
-        logits = segmodel.seg_model(x)
+        logits = segmodel.seg_model(x) #B,C,H,W
         
     return logits
 
 def run_inference_on_tile(segmodel, tile_img, device, tv_weight):
-    """Runs model and applies softmax + optional TV denoise."""
+    """
+    Runs model and applies softmax + optional TV denoise.
+    2026.1.6 update: tv_denoise now handle tensor with B seperately
+    """
     logits = _model_forward(segmodel, tile_img, device)
     
-    # Softmax on channel dimension (usually 1 for BCDHW, 0 if squeezed)
-    probs = F.softmax(logits, dim=1 if logits.dim() > 3 else 0).detach().cpu().numpy()
-    probs = np.squeeze(probs, axis=0) # Remove Batch
-    
+    print(f"{logits.shape=}")
+    # Softmax on channel dimension (1 for BCDHW/ BCHW)
+    probs = F.softmax(logits, dim=1).detach().cpu().numpy()
+    out = np.empty_like(probs)
+
     if tv_weight > 0:
-        probs = denoise_tv_chambolle(probs, weight=tv_weight, channel_axis=0)
+        for b in range(probs.shape[0]):
+            out[b] = denoise_tv_chambolle(probs[b], weight=tv_weight, channel_axis=0)  # (C,H,W), channel axis=0 
     
-    return probs
+    return out if tv_weight > 0 else probs  #B,C,D,H,W or B,C,H,W
 
 # -------------------------------------------------------------
 #  Tiling Logic
@@ -96,11 +101,14 @@ def eval_full_roi(
     
     dims = segmodel.dims
     img_shape = image.shape[:dims]
+    tile = tile if dims == 3 else tile[1:]
     
+
     # 1. Fallback for non-tiled inference
     if tile is None or all(t >= i for t, i in zip(tile, img_shape)):
         with torch.no_grad():
             probs = run_inference_on_tile(segmodel, image, device, tv_denoise_weight)
+            probs = np.squeeze(probs, axis=0)  # remove batch dim
             feat = segmodel.seg_model.get_feature_map() if capture_features else None
             return np.argmax(probs, axis=0) + 1, feat
 
@@ -130,6 +138,7 @@ def eval_full_roi(
             
             # Inference
             probs_tile = run_inference_on_tile(segmodel, tile_img, device, tv_denoise_weight)
+            probs_tile = np.squeeze(probs_tile, axis=0)  # remove batch dim
             
             # Probability Accumulation
             # Crop probs back to the actual size (in case it was padded)

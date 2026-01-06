@@ -33,17 +33,19 @@ import os
 import sys
 import numpy as np
 import torch
+# setting a short tensor print format for easier debugging
+torch.set_printoptions(edgeitems=1, threshold=10, linewidth=120)
 from typing import Optional
 
 import napari
 from time import time
 from magicgui import magicgui
  
-from lib.arch.segmodel import build_cmpsd, build_dpt, build_inception_v3
+from lib.arch.segmodel import build_cmpsd, build_dpt, build_and_load_weights_dpt,build_inception_v3
 from lib.utils.preprocess_img import  pad_to_multiple
 from helper.napari_view_utilis import find_valid_rectangle_bbox_from_shapes 
 from lib.datasets.sparse_label_dataset import SparseLabelSegDataset
-from lib.datasets.load_rois import load_t1779_3
+from lib.datasets.load_rois import load_t1779_1, load_3d_rm009
 
 from confettii.plot_helper import three_pca_as_rgb_image
 # ----------------------------------
@@ -72,7 +74,7 @@ class NapariSegTool:
         
         # State Management
         self.roi: Optional[np.ndarray] = None
-        self.labels: Optional[np.ndarray] = None
+        self.label: Optional[np.ndarray] = None
         self.mask: Optional[np.ndarray] = None
         self.segmodel: Optional[Modelsegmodel] = None
         self.pred: Optional[np.ndarray] = None
@@ -80,12 +82,7 @@ class NapariSegTool:
         self.offset = (0, 0, 0) if dims == 3 else (0, 0)
         self.final_roi = None
         # UI Config
-        self.COMMON_WIDGETS = dict(
-            tile_d={"widget_type": "LineEdit"},
-            tile_h={"widget_type": "LineEdit"},
-            tile_w={"widget_type": "LineEdit"},
-            tv_denoise_weight={"widget_type": "LineEdit"},
-        )
+
         self._initialize_data()
         self._setup_layers()
         self._init_widgets()
@@ -93,11 +90,12 @@ class NapariSegTool:
 
     def _initialize_data(self):
         """Load initial datasets."""
-        roi, label, mask = load_t1779_3()
+        # roi, label, mask = load_t1779_1(region_key='1_1')
+        roi, label, mask = load_3d_rm009() 
         roi_shape = roi.shape[:self.dims]
         
         self.roi = roi
-        self.labels = label if label is not None else np.zeros(roi_shape, dtype=np.uint8)
+        self.label = label if label is not None else np.zeros(roi_shape, dtype=np.uint8)
         self.mask = mask if mask is not None else np.ones(roi_shape, dtype=bool)
 
     def _setup_layers(self):
@@ -106,7 +104,7 @@ class NapariSegTool:
             if layer_name in self.viewer.layers:
                 self.viewer.layers.remove(layer_name)
         self.viewer.add_image(self.roi, name="roi")
-        self.viewer.add_labels(self.labels, name="user_labels")
+        self.viewer.add_labels(self.label, name="user_labels")
         self.viewer.add_labels(self.mask, name="mask", opacity=0.3)
 
     # --- Logic Methods ---
@@ -116,11 +114,13 @@ class NapariSegTool:
             print("Error: Build model first.")
             return
         imagenet_preproc = self.segmodel.name in ["DPT", "inception_v3"] # Simplified check
+
+
         ds = SparseLabelSegDataset(
-            self.roi, self.labels, dims=self.dims, 
+            self.roi, self.label, dims=self.dims, 
             patch_size=patch_size, imagenet_preproc=imagenet_preproc
         )
-        n_classes = max(2, len(np.unique(self.labels)) - 1)
+        n_classes = max(2, len(np.unique(self.label)) - 1)
         device = "cuda" if torch.cuda.is_available() else "cpu"
         
         train_seghead(self.segmodel, ds, n_classes=n_classes, device=device,
@@ -262,7 +262,7 @@ class NapariSegTool:
         """Define and dock magicgui widgets."""
         @magicgui(call_button="Build Model", arch={"choices": ["cmpsd", "DPT", "inception_v3"]})
         def widget_build(arch: str = "DPT"):
-            classes = np.unique(self.labels)
+            classes = np.unique(self.label)
             n_classes = max(2, int(len(classes) - 1))
             
             if arch == "cmpsd":
@@ -277,19 +277,43 @@ class NapariSegTool:
 
         @magicgui(
             call_button="Train & Eval",
-            patch_d={"widget_type": "LineEdit"}, patch_h={"widget_type": "LineEdit"}, patch_w={"widget_type": "LineEdit"},
-            **self.COMMON_WIDGETS
+            epochs={"min": 1, "max": 50},
+            batch_size={"min": 1, "max": 512},
+            lr={"step": 1e-4},
+            patch_d={"widget_type": "LineEdit"},
+            patch_h={"widget_type": "LineEdit"},
+            patch_w={"widget_type": "LineEdit"},
         )
         def widget_train_eval(
             epochs=2, batch_size=16, lr=1e-4, 
             patch_h=512, patch_w=512, patch_d=1,
-            tile_h=512, tile_w=512, tile_d=1,
-            tv_denoise_weight=100000, capture_features=True
+            # tile_h=1536, tile_w=1536, tile_d=1,
+            tv_denoise_weight=0 , capture_features=True
         ):
             start = time()
             self.perform_training(epochs, batch_size, lr, (int(patch_d), int(patch_h), int(patch_w)))
-            self.perform_inference((int(tile_d), int(tile_h), int(tile_w)), float(tv_denoise_weight), capture_features)
+            self.perform_inference((int(patch_d), int(patch_h), int(patch_w)), float(tv_denoise_weight), capture_features)
             print(f"Total time: {time()-start:.2f}s")
+
+        
+
+        @magicgui(
+            call_button="eval SegHead pretrained",
+        )
+        def eval_widget_predefined(tile_h: int = 512, tile_w: int = 512, tile_d: int = 1,
+                       tv_denoise_weight : float = 10000,
+                        capture_features: bool = True):
+            tile_d = int(tile_d)
+            tile_h = int(tile_h)
+            tile_w = int(tile_w)
+            tv_denoise_weight = float(tv_denoise_weight)
+            
+            #define and load the weights from pretrained seg_model 
+            #this pretrained model will predict 8 classes
+            self.segmodel = build_and_load_weights_dpt(dims=self.dims)
+            self.perform_inference((int(tile_d), int(tile_h), int(tile_w)), float(tv_denoise_weight), capture_features)
+
+
 
 
         @magicgui(call_button="Enable Double-Click Similarity")
@@ -304,11 +328,14 @@ class NapariSegTool:
         self.viewer.window.add_dock_widget(widget_build, area="right", name="1. Build")
         self.viewer.window.add_dock_widget(widget_train_eval, area="right", name="2. Train/Eval")
         self.viewer.window.add_dock_widget(widget_similarity, area="right", name="3. Analysis")
+        self.viewer.window.add_dock_widget(eval_widget_predefined, area="right", name="4. Eval Pretrained")
 
 
-def add_ui(viewer: napari.Viewer) -> None:
+def add_ui(viewer: napari.Viewer) -> NapariSegTool:
     # Entry point
-    viewer.seg_tool = NapariSegTool(viewer)
+    #TODO: automatic dims detection based on ROI shape
+    seg_tool = NapariSegTool(viewer, dims=2)
+    return seg_tool
 
 
 def main() -> None:
@@ -322,7 +349,7 @@ def main() -> None:
         for ln in names:
             viewer.layers[ln].visible = not viewer.layers[ln].visible
 
-    add_ui(viewer)
+    seg_tool = add_ui(viewer)
     napari.run()
 
 

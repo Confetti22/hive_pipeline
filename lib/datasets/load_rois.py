@@ -207,3 +207,16 @@ def load_t1779_1(region_key: str = "2_3",three_d=False,DOWNSAMPLE=False):
 
     return roi , label,mask
 
+def load_3d_rm009():
+    "the training dataset is from  z55200-z67800 (1um) ,  transfer to 4um space is from Z13800~Z16950"
+    "the testing dataset is from  z68100-z69600, transfer to 4um space is Z17025-Z17400 "
+    "here load a vol seperated from training range"
+    #13750 is the first slice ahead of 55200 and is the 5th in 4um
+    vol = tif.imread("/home/confetti/data/rm009/rm009_roi/4/Z13750_C4.tif")
+    # vol = tif.imread("/home/confetti/data/rm009/rm009_roi/z16200_z16276C4_d76_h3500_w5250.tif")
+    h,w = vol.shape
+    print(f"rm009{vol.shape= }")
+    # vol = vol[:,:int(h//2),int(w//2):]
+    vol = np.squeeze(vol)
+    label, mask = None,None
+    return vol, label,mask

@@ -81,7 +81,6 @@ def build_dpt(dims: int, n_classes: int, ) -> Modelsegmodel:
         model_dir, local_files_only=True, output_hidden_states=True
     ).eval()
     backbone = Dinov3HFBackbone(hf_backbone)
-    print(f"dinov3 backbone {backbone.keys()}")
     seg_model = DPT(nclass=n_classes,backbone=backbone)
     seg_model.train()
 
@@ -91,6 +90,8 @@ def build_dpt(dims: int, n_classes: int, ) -> Modelsegmodel:
     print("\n","unfrozen model's layer name",[f"{n}" for n, p in seg_model.named_parameters() if  p.requires_grad],"\n")
 
     return Modelsegmodel("DPT", dims,seg_model,n_classes)
+
+
 
 from lib.distill.student import TinyVitBackbone, TinyViTWithTaps, TinyViTWithTapsTimm
 def build_tinyvit_dpt(dims:int, n_classes:int,) -> Modelsegmodel:
@@ -141,7 +142,7 @@ def build_tinyvittimm_dpt(dims:int, n_classes:int,) -> Modelsegmodel:
     return Modelsegmodel("s_tinyvittimm", dims,seg_model,n_classes)
   
 
-def build_and_load_weights_dpt(dims: int, n_classes: int, ) -> Modelsegmodel:
+def build_and_load_weights_dpt(dims: int, ) -> Modelsegmodel:
     """Build DPT with DINOv3-like backbone + DPTHead.
 
     Notes:
@@ -149,6 +150,7 @@ def build_and_load_weights_dpt(dims: int, n_classes: int, ) -> Modelsegmodel:
         - seghead expects 2D features; for 3D ROI we loop slices externally.
     """
 
+    n_classes = 9  #predefined number of classes for this pretrained model
     model_dir = "/home/confetti/e5_workspace/hive1/models/facebook/dinov3-vits16-pretrain-lvd1689m"# ViT-S/16 (patch=16)
     hf_backbone = AutoModel.from_pretrained(
         model_dir, local_files_only=True, output_hidden_states=True
