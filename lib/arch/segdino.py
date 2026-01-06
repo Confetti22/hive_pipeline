@@ -99,6 +99,7 @@ class DPTHead(nn.Module):
         super(DPTHead, self).__init__()
         # in_channels  is  the embed_dim of backbone is 768
         # out_channels  = [96, 192, 384, 768]
+        self.num_features = len(out_channels)
         self.projects = nn.ModuleList([
             nn.Conv2d(
                 in_channels=in_channels,
@@ -149,7 +150,7 @@ class DPT(nn.Module):
         out_channels=[96, 192, 384, 768], 
         use_bn=False,
         backbone = None,
-        seg_head_layers = None,
+        seg_head_layers = [2,5,8,11],
     ):
         super(DPT, self).__init__()
         
@@ -164,6 +165,25 @@ class DPT(nn.Module):
 
         default_layers = self.intermediate_layer_idx.get(self.encoder_size, self.intermediate_layer_idx['base'])
         self.seg_head_layers = list(seg_head_layers) if seg_head_layers is not None else default_layers
+
+        base_out_channels = out_channels
+        if isinstance(base_out_channels, int):
+            base_out_channels = [base_out_channels]
+        else:
+            base_out_channels = list(base_out_channels)
+
+        if len(base_out_channels) == 1:
+            seg_out_channels = base_out_channels * len(self.seg_head_layers)
+        elif len(base_out_channels) == len(self.seg_head_layers):
+            seg_out_channels = base_out_channels
+        elif len(base_out_channels) == len(default_layers):
+            layer_to_channels = {idx: ch for idx, ch in zip(default_layers, base_out_channels)}
+            seg_out_channels = [layer_to_channels.get(idx, base_out_channels[-1]) for idx in self.seg_head_layers]
+        else:
+            raise ValueError(
+                f"out_channels must be length 1, {len(self.seg_head_layers)}, or {len(default_layers)} "
+                f"but got {len(base_out_channels)}"
+            )
 
         self.head = DPTHead(nclass, self.backbone.embed_dim, features, use_bn, out_channels=seg_out_channels)
         
