@@ -135,11 +135,13 @@ def get_path_map():
 
 def load_t1779_2():
     #load a vol around hp
-    offset =[7000,2700,3600]
-    size = [512,2048,4096]
+    scale = 2
+    o_offset =[7000,2700,3600]
+    o_size = [2048,2048,4096]
+    offset = [int(coord//2**scale) for coord in o_offset]
+    size = [int(sz//2**scale) for sz in o_size]
     image_vol = wrap_image("/home/confetti/mnt/data/VISoR_Reconstruction/SIAT_SIAT/BiGuoqiang/Mouse_Brain/20210131_ZSS_USTC_THY1-YFP_1779_1/Reconstruction_1.0/z00000_c1.ims.part")
-    roi = image_vol.from_roi(coords=[*offset, *size],level=0,channel=2)
-    roi = zoom(roi,(0.25,0.25,0.25),order=1)
+    roi = image_vol.from_roi(coords=[*offset, *size],level=scale,channel=2)
     label,mask = None, None
     return roi, label, mask
 

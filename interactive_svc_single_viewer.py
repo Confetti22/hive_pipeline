@@ -45,7 +45,7 @@ from lib.arch.segmodel import build_cmpsd, build_dpt, build_and_load_weights_dpt
 from lib.utils.preprocess_img import  pad_to_multiple
 from helper.napari_view_utilis import find_valid_rectangle_bbox_from_shapes 
 from lib.datasets.sparse_label_dataset import SparseLabelSegDataset
-from lib.datasets.load_rois import load_t1779_1, load_3d_rm009
+from lib.datasets.load_rois import load_t1779_1,load_t1779_2, load_3d_rm009
 
 from confettii.plot_helper import three_pca_as_rgb_image
 # ----------------------------------
@@ -90,13 +90,15 @@ class NapariSegTool:
 
     def _initialize_data(self):
         """Load initial datasets."""
-        # roi, label, mask = load_t1779_1(region_key='1_1')
-        roi, label, mask = load_3d_rm009() 
+        # roi, label, mask = load_t1779_1(region_key='1_1', three_d = True)
+        # roi, label, mask = load_3d_rm009() 
+        roi, label, mask = load_t1779_2()
         roi_shape = roi.shape[:self.dims]
         
         self.roi = roi
         self.label = label if label is not None else np.zeros(roi_shape, dtype=np.uint8)
         self.mask = mask if mask is not None else np.ones(roi_shape, dtype=bool)
+        print(f"{self.roi.shape=}, {self.label.shape=}, {self.mask.shape=}")
 
     def _setup_layers(self):
         """Prepare Napari layers."""
@@ -331,16 +333,20 @@ class NapariSegTool:
         self.viewer.window.add_dock_widget(eval_widget_predefined, area="right", name="4. Eval Pretrained")
 
 
-def add_ui(viewer: napari.Viewer) -> NapariSegTool:
+def add_ui(viewer: napari.Viewer,dims) -> NapariSegTool:
     # Entry point
     #TODO: automatic dims detection based on ROI shape
-    seg_tool = NapariSegTool(viewer, dims=2)
+    seg_tool = NapariSegTool(viewer,dims)
     return seg_tool
+
+
+# from napari_orthogonal_views.ortho_view_manager import show_orthogonal_views
 
 
 def main() -> None:
     os.environ.setdefault("NAPARI_ASYNC", "1")
-    viewer = napari.Viewer(ndisplay=2)
+    dims = 3
+    viewer = napari.Viewer(ndisplay=dims)
 
     # Key binding: toggle predicted segout-like layers
     @viewer.bind_key('v')
@@ -349,7 +355,8 @@ def main() -> None:
         for ln in names:
             viewer.layers[ln].visible = not viewer.layers[ln].visible
 
-    seg_tool = add_ui(viewer)
+    seg_tool = add_ui(viewer,dims=dims)
+    # show_orthogonal_views(viewer)
     napari.run()
 
 
