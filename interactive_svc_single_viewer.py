@@ -90,9 +90,9 @@ class NapariSegTool:
 
     def _initialize_data(self):
         """Load initial datasets."""
-        # roi, label, mask = load_t1779_1(region_key='1_1', three_d = True)
+        roi, label, mask = load_t1779_1(region_key='1_1', three_d = (self.dims==3),DOWNSAMPLE=False)
         # roi, label, mask = load_3d_rm009() 
-        roi, label, mask = load_t1779_2()
+        # roi, label, mask = load_t1779_2()
         roi_shape = roi.shape[:self.dims]
         
         self.roi = roi
@@ -288,7 +288,7 @@ class NapariSegTool:
         )
         def widget_train_eval(
             epochs=2, batch_size=16, lr=1e-4, 
-            patch_h=512, patch_w=512, patch_d=1,
+            patch_h=1536, patch_w=1536, patch_d=1,
             # tile_h=1536, tile_w=1536, tile_d=1,
             tv_denoise_weight=0 , capture_features=True
         ):
@@ -345,7 +345,7 @@ def add_ui(viewer: napari.Viewer,dims) -> NapariSegTool:
 
 def main() -> None:
     os.environ.setdefault("NAPARI_ASYNC", "1")
-    dims = 3
+    dims = 2
     viewer = napari.Viewer(ndisplay=dims)
 
     # Key binding: toggle predicted segout-like layers

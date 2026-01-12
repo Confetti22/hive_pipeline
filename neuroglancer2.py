@@ -35,7 +35,6 @@ class NeuroglancerSegTool:
 
         # 4. Initialize Volumes and Layers
         self.roi_vol = neuroglancer.LocalVolume(data=self.roi, dimensions=self.dimensions)
-        self.label_vol = neuroglancer.LocalVolume(data=self.label, dimensions=self.dimensions)
         
         # Prediction volume initialized as zeros
         self.pred_data = np.zeros_like(self.label)
@@ -51,7 +50,6 @@ class NeuroglancerSegTool:
         """Initializes the browser view with 4 panes (3 ortho + 3D)."""
         with self.viewer.txn() as s:
             s.layers['image'] = neuroglancer.ImageLayer(source=self.roi_vol)
-            s.layers['user_labels'] = neuroglancer.SegmentationLayer(source=self.label_vol)
             s.layers['prediction'] = neuroglancer.SegmentationLayer(source=self.pred_vol)
             s.layout = '4panel' # This provides the 3 orthogonal views + 3D view
 
@@ -65,18 +63,66 @@ class NeuroglancerSegTool:
             s.input_event_bindings.viewer['keyp'] = 'eval_pretrained'
         
         print("Controls: [T] Train & Eval | [P] Eval Pretrained")
+    
+    def _get_sparse_mask_from_annotations(self):
+        # Create an empty mask
+        label = np.zeros(self.roi.shape, dtype=np.uint32)
+        
+        # Get all annotations from the viewer state
+        annotations = self.viewer.state.layers['annotation'].annotations
+        
+        for ann in annotations:
+            # Convert coordinate (floats) to voxel indices (ints)
+            # Note: Neuroglancer uses [X, Y, Z] order in its state
+            try:
+                # Scale coordinates back to array indices
+                pos = np.array(ann.point).astype(int)
+                z, y, x = pos[2], pos[1], pos[0] # Adjust based on your dims
+                
+                # Use the 'description' field as the label value
+                # If no description, default to label 1
+                label_val = int(ann.description) if ann.description.isdigit() else 1
+                radius = 6
+
+                if self.dims == 3:
+                    z_min = max(0, z - radius)
+                    z_max = min(label.shape[0], z + radius + 1)
+                    y_min = max(0, y - radius)
+                    y_max = min(label.shape[1], y + radius + 1)
+                    x_min = max(0, x - radius)
+                    x_max = min(label.shape[2], x + radius + 1)
+
+                    zz, yy, xx = np.ogrid[z_min:z_max, y_min:y_max, x_min:x_max]
+                    sphere = (zz - z) ** 2 + (yy - y) ** 2 + (xx - x) ** 2 <= radius ** 2
+                    label[z_min:z_max, y_min:y_max, x_min:x_max][sphere] = label_val
+                else:
+                    y_min = max(0, y - radius)
+                    y_max = min(label.shape[0], y + radius + 1)
+                    x_min = max(0, x - radius)
+                    x_max = min(label.shape[1], x + radius + 1)
+
+                    yy, xx = np.ogrid[y_min:y_max, x_min:x_max]
+                    circle = (yy - y) ** 2 + (xx - x) ** 2 <= radius ** 2
+                    label[y_min:y_max, x_min:x_max][circle] = label_val
+            except Exception as e:
+                print(f"Skipping invalid point: {e}")
+                
+        return label
+
 
     def _trigger_train_eval(self, action_state):
         """Callback for the 'T' key."""
         print("Action Triggered: Training and Inference...")
         
         # 1. Build Model (Default: DPT)
-        n_classes = max(2, len(np.unique(self.label_vol.data)) - 1)
+        pixel_label = self._get_sparse_mask_from_annotations() 
+
+        n_classes = max(2, len(np.unique(pixel_label)) - 1)
         self.segmodel = build_dpt(dims=self.dims, n_classes=n_classes)
         
         # 2. Train (Using default values from your magicgui)
         ds = SparseLabelSegDataset(
-            self.roi, self.label_vol.data, dims=self.dims, 
+            self.roi, pixel_label, dims=self.dims, 
             patch_size=(1, 512, 512), imagenet_preproc=True
         )
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -86,6 +132,7 @@ class NeuroglancerSegTool:
         
         # 3. Inference
         self._run_inference()
+
 
     def _trigger_pretrained(self, action_state):
         """Callback for the 'P' key."""
@@ -105,7 +152,7 @@ class NeuroglancerSegTool:
         # Run eval
         pred, _ = eval_full_roi(
             self.segmodel, padded_roi, device, 
-            tile=(1, 512, 512), capture_features=False, tv_denoise_weight=0
+            tile=(64, 512, 512), capture_features=False, tv_denoise_weight=0
         )
         
         # Crop back to original size if padded

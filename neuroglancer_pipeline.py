@@ -17,6 +17,7 @@ from lib.utils.preprocess_img import pad_to_multiple
 class NeuroglancerSegTool:
     def __init__(self, dims: int = 3):
         self.dims = dims
+        self.tile =(512,512,512) if dims==3 else (512,512)
         # 1. Start Neuroglancer Server
         self.viewer = neuroglancer.Viewer()
         
@@ -138,7 +139,7 @@ class NeuroglancerSegTool:
         # 2. Train (Using default values from your magicgui)
         ds = SparseLabelSegDataset(
             self.roi, pixel_label, dims=self.dims, 
-            patch_size=(1, 512, 512), imagenet_preproc=True
+            patch_size=(1,512,512), imagenet_preproc=True
         )
         device = "cuda" if torch.cuda.is_available() else "cpu"
         
@@ -166,7 +167,7 @@ class NeuroglancerSegTool:
         # Run eval
         pred, _ = eval_full_roi(
             self.segmodel, padded_roi, device, 
-            tile=(1, 512, 512), capture_features=False, tv_denoise_weight=0
+            tile=self.tile, capture_features=False, tv_denoise_weight=0
         )
         
         # Crop back to original size if padded

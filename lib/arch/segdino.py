@@ -11,7 +11,7 @@ from torchvision.transforms import GaussianBlur
 import numpy as np
 import torch
 import torch.nn.functional as F
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 def _pca_numpy(X: np.ndarray, k: int = 3) -> np.ndarray:
     """Reduce features to top-k principal components using NumPy SVD.
@@ -151,6 +151,8 @@ class DPT(nn.Module):
         use_bn=False,
         backbone = None,
         seg_head_layers = [2,5,8,11],
+        feature_map_upsample: str = "bilinear",
+        feature_map_upsample_kwargs: Optional[dict] = None,
     ):
         super(DPT, self).__init__()
         
@@ -162,6 +164,8 @@ class DPT(nn.Module):
         self.encoder_size = encoder_size
         self.backbone = backbone
         self.feature_map = None
+        self.feature_map_upsample = feature_map_upsample
+        self.feature_map_upsample_kwargs = feature_map_upsample_kwargs or {}
 
         default_layers = self.intermediate_layer_idx.get(self.encoder_size, self.intermediate_layer_idx['base'])
         self.seg_head_layers = list(seg_head_layers) if seg_head_layers is not None else default_layers
@@ -311,15 +315,23 @@ class DPT(nn.Module):
         t = torch.from_numpy(merged).permute(0, 3, 1, 2)  # (B, C, H, W)
 
         #smooth the features to avg out the feature variance on cell texture
-        blur = GaussianBlur (kernel_size=3, sigma=1)
-        t = blur(t)
+        # blur = GaussianBlur (kernel_size=3, sigma=1)
+        # t = blur(t)
 
-        up = F.interpolate(
-            t,
-            size=(patch_h * 16, patch_w * 16),
-            mode="bilinear",
-            align_corners=True,
-        )  # (B, C, 16*H, 16*W)
+        upsample_mode = None 
+        if upsample_mode == "bilateral":
+            up = self._bilateral_upsample_feature_map(
+                t,
+                target_hw=(patch_h * 16, patch_w * 16),
+                chunk_size=16,
+            )
+        else:
+            up = F.interpolate(
+                t,
+                size=(patch_h * 16, patch_w * 16),
+                mode="bilinear",
+                align_corners=True,
+            )  # (B, C, 16*H, 16*W)
         up = up.permute(0, 2, 3, 1).contiguous().cpu().numpy()  # (B, 16*H, 16*W, C)
         # remove trivial B dim
         up = np.squeeze(up)
@@ -328,12 +340,82 @@ class DPT(nn.Module):
 
         return up
 
+    @torch.no_grad()
+    def _bilateral_upsample_feature_map(
+        self,
+        t: torch.Tensor,
+        target_hw: Tuple[int, int],
+        kernel_size: int = 16,
+        spatial_sigma: float = 8,
+        range_sigma: float = 1,
+        guide_channels: int = 0,
+        chunk_size: int = 16,
+    ) -> torch.Tensor:
+        """Edge-preserving upsample using a bilateral filter on the feature map."""
+        if kernel_size < 1:
+            raise ValueError("kernel_size must be >= 1")
+        if kernel_size % 2 == 0:
+            kernel_size += 1
+
+        up = F.interpolate(
+            t,
+            size=target_hw,
+            mode="bilinear",
+            align_corners=True,
+        )
+        if kernel_size == 1:
+            return up
+
+        guide = up
+        if guide_channels <= 0:
+            guide = up.mean(dim=1, keepdim=True)
+        else:
+            guide = up[:, : min(up.shape[1], guide_channels)]
+
+        guide = guide.float()
+        guide_std = float(guide.std().clamp(min=1e-6))
+        sigma_range = max(range_sigma * guide_std, 1e-6)
+        sigma_spatial = max(spatial_sigma, 1e-6)
+
+        pad = kernel_size // 2
+        coords = torch.arange(kernel_size, device=up.device, dtype=guide.dtype) - pad
+        grid_y, grid_x = torch.meshgrid(coords, coords)
+        spatial_w = torch.exp(-(grid_x ** 2 + grid_y ** 2) / (2.0 * sigma_spatial ** 2))
+        spatial_w = spatial_w.reshape(1, -1, 1)
+
+        guide_pad = F.pad(guide, (pad, pad, pad, pad), mode="reflect")
+        guide_unfold = F.unfold(guide_pad, kernel_size=kernel_size)
+        B, _, hw = guide_unfold.shape
+        g = guide.shape[1]
+        guide_unfold = guide_unfold.view(B, g, kernel_size * kernel_size, hw)
+        guide_center = guide.reshape(B, g, hw).unsqueeze(2)
+        diff = guide_unfold - guide_center
+        range_w = torch.exp(-(diff * diff).sum(dim=1) / (2.0 * sigma_range ** 2))
+        weights = range_w * spatial_w
+        weights = weights / (weights.sum(dim=1, keepdim=True) + 1e-8)
+
+        up_pad = F.pad(up, (pad, pad, pad, pad), mode="reflect")
+        B, C, H, W = up.shape
+        out = torch.empty_like(up)
+        if chunk_size <= 0:
+            chunk_size = C
+        chunk_size = min(chunk_size, C)
+
+        for start in range(0, C, chunk_size):
+            end = min(C, start + chunk_size)
+            up_chunk = up_pad[:, start:end, :, :]
+            up_unfold = F.unfold(up_chunk, kernel_size=kernel_size)
+            up_unfold = up_unfold.view(B, end - start, kernel_size * kernel_size, hw)
+            out_chunk = (up_unfold * weights.unsqueeze(1)).sum(dim=2)
+            out[:, start:end, :, :] = out_chunk.view(B, end - start, H, W)
+
+        if out.dtype != t.dtype:
+            out = out.to(dtype=t.dtype)
+        return out
+
 
     def get_feature_map(self):
         if not self.training:
             return self.feature_map
         else:
             return None
-
-
-
