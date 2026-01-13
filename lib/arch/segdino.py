@@ -151,8 +151,8 @@ class DPT(nn.Module):
         use_bn=False,
         backbone = None,
         seg_head_layers = [2,5,8,11],
-        feature_map_upsample: str = "bilinear",
-        feature_map_upsample_kwargs: Optional[dict] = None,
+        feat_up_method: str = "bilinear",
+        smooth_params=(16,4,1),
     ):
         super(DPT, self).__init__()
         
@@ -164,8 +164,8 @@ class DPT(nn.Module):
         self.encoder_size = encoder_size
         self.backbone = backbone
         self.feature_map = None
-        self.feature_map_upsample = feature_map_upsample
-        self.feature_map_upsample_kwargs = feature_map_upsample_kwargs or {}
+        self.feat_up_method = feat_up_method
+        self.smooth_params = smooth_params
 
         default_layers = self.intermediate_layer_idx.get(self.encoder_size, self.intermediate_layer_idx['base'])
         self.seg_head_layers = list(seg_head_layers) if seg_head_layers is not None else default_layers
@@ -208,8 +208,34 @@ class DPT(nn.Module):
             self.feature_map = self.compute_feature_map_pca(features, patch_h, patch_w)
 
         out = self.head(features, patch_h, patch_w)
-        out = F.interpolate(out, (patch_h * 16, patch_w * 16), mode='bilinear', align_corners=True)
+         
+        out = self.upsample_feature_map(out, scale_factor=16)
+
+
+        return out #logits
+    
+    def upsample_feature_map(self, features, scale_factor):
+        """
+        upsample feature map both for inference and feature_map computation
+        """
+        if self.feat_up_method == "bilateral" and (not self.training):
+            print(f"traing{self.training} upsample feature map using bilateral upsample with kernel_size={self.smooth_params[0]}, spatial_sigma={self.smooth_params[1]}, range_sigma={self.smooth_params[2]}")
+            out  = self._bilateral_upsample_feature_map(
+                features,
+                target_hw=(features.shape[-2]*scale_factor, features.shape[-1]*scale_factor),
+                kernel_size=self.smooth_params[0],
+                spatial_sigma=self.smooth_params[1],
+                range_sigma=self.smooth_params[2],
+                chunk_size=4,
+            )
+        else:
+            print(f"training{self.training} upsample feature map using bilinear upsample")
+            blur = GaussianBlur(kernel_size=3, sigma=1)
+            features = blur(features)
+            out = F.interpolate(features, (features.shape[-2]*scale_factor, features.shape[-1]*scale_factor), mode='bilinear', align_corners=True)
         return out
+
+
 
     def compute_feature_map(self,features,patch_h, patch_w):
         "concated feature from 4 layer and upsample to patch_h, patch_w"
@@ -227,10 +253,8 @@ class DPT(nn.Module):
 
         #TODO: maybe need a suitable blur method at feature map to blur out feature variation across cell, 
         # but preserve the difference at region boundary
-        blur = GaussianBlur (kernel_size=3, sigma=1)
-        fused = blur(fused)
 
-        up_fused= F.interpolate(fused, (patch_h * 16, patch_w * 16), mode='bilinear', align_corners= False)
+        up_fused = self.upsample_feature_map(fused,scale_factor=16)
         
 
         up_fused = up_fused.cpu().numpy() # (B,C,H,W)
@@ -314,24 +338,8 @@ class DPT(nn.Module):
 
         t = torch.from_numpy(merged).permute(0, 3, 1, 2)  # (B, C, H, W)
 
-        #smooth the features to avg out the feature variance on cell texture
-        # blur = GaussianBlur (kernel_size=3, sigma=1)
-        # t = blur(t)
+        up = self.upsample_feature_map(t, scale_factor=16)  # (B, C, 16*H, 16*W)
 
-        upsample_mode = None 
-        if upsample_mode == "bilateral":
-            up = self._bilateral_upsample_feature_map(
-                t,
-                target_hw=(patch_h * 16, patch_w * 16),
-                chunk_size=16,
-            )
-        else:
-            up = F.interpolate(
-                t,
-                size=(patch_h * 16, patch_w * 16),
-                mode="bilinear",
-                align_corners=True,
-            )  # (B, C, 16*H, 16*W)
         up = up.permute(0, 2, 3, 1).contiguous().cpu().numpy()  # (B, 16*H, 16*W, C)
         # remove trivial B dim
         up = np.squeeze(up)

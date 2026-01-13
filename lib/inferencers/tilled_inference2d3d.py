@@ -80,6 +80,7 @@ def run_inference_on_tile(segmodel, tile_img, device, tv_weight):
     out = np.empty_like(probs)
 
     if tv_weight > 0:
+        print(f"using tv denoise with weight {tv_weight}")
         for b in range(probs.shape[0]):
             out[b] = denoise_tv_chambolle(probs[b], weight=tv_weight, channel_axis=0)  # (C,H,W), channel axis=0 
     

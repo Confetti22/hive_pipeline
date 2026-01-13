@@ -51,7 +51,7 @@ from confettii.plot_helper import three_pca_as_rgb_image
 # ----------------------------------
 # Project bootstrap (repo root import)
 # ----------------------------------
-DOWNSAMPLE = True 
+DOWN_FACTOR= 0 
 NAPARI = True
 
 PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -68,10 +68,12 @@ from lib.trainers.train_seghead import train_seghead
 from lib.inferencers.tilled_inference2d3d import eval_full_roi   
 
 class NapariSegTool:
-    def __init__(self, viewer: napari.Viewer, dims: int = 3):
+    def __init__(self, viewer: napari.Viewer|None, dims: int = 3, napari: bool = True,smooth_params=(16,4,1)):
         self.viewer = viewer
         self.dims = dims
-        
+        self.napari = napari
+        self.smooth_params = smooth_params
+
         # State Management
         self.roi: Optional[np.ndarray] = None
         self.label: Optional[np.ndarray] = None
@@ -79,21 +81,25 @@ class NapariSegTool:
         self.segmodel: Optional[Modelsegmodel] = None
         self.pred: Optional[np.ndarray] = None
         self.feat: Optional[np.ndarray] = None
+        self.pca_feat: Optional[np.ndarray] = None
         self.offset = (0, 0, 0) if dims == 3 else (0, 0)
         self.final_roi = None
         # UI Config
 
         self._initialize_data()
-        self._setup_layers()
+        if self.napari:
+            self._setup_layers()
         self._init_widgets()
 
 
     def _initialize_data(self):
         """Load initial datasets."""
-        roi, label, mask = load_t1779_1(region_key='1_1', three_d = (self.dims==3),DOWNSAMPLE=False)
+        roi, label, mask = load_t1779_1(region_key='2_3', three_d = (self.dims==3),down_factor=DOWN_FACTOR)
+        
         # roi, label, mask = load_3d_rm009() 
         # roi, label, mask = load_t1779_2()
         roi_shape = roi.shape[:self.dims]
+        # label = None
         
         self.roi = roi
         self.label = label if label is not None else np.zeros(roi_shape, dtype=np.uint8)
@@ -139,7 +145,7 @@ class NapariSegTool:
         self.segmodel.seg_model.eval()
         self.segmodel.seg_model.to(device)
         # Handle Bounding Box / ROI selection
-        bbox = find_valid_rectangle_bbox_from_shapes({"dims": self.dims, "layers": self.viewer.layers,"roi": self.roi})
+        bbox = find_valid_rectangle_bbox_from_shapes({"dims": self.dims, "layers": self.viewer.layers,"roi": self.roi}) if self.napari else None
         
         working_roi = self.roi
         if bbox:
@@ -166,7 +172,10 @@ class NapariSegTool:
                 feat = feat[:y1-y0,:x1-x0,:]   if capture_features else None
 
         self.pred, self.feat = pred, feat
-        self._update_layers(pred, feat)
+        if self.napari:
+            self._update_layers(pred, feat)
+        
+        self.create_pca_rgb()
 
 
     def _update_layers(self, pred, feat):
@@ -174,8 +183,6 @@ class NapariSegTool:
         if "prediction" in self.viewer.layers:
             self.viewer.layers.remove("prediction")
         self.viewer.add_labels(pred, name="prediction", translate=self.offset)
-        if feat is not None:
-            self.create_pca_rgb()
         
     def create_pca_rgb(self):
         """
@@ -216,17 +223,21 @@ class NapariSegTool:
             rgb = three_pca_as_rgb_image(flat_feat, spatial_shape)
 
         # 4. Add/Update the Napari layer
-        if "feat_rgb" in self.viewer.layers:
-            self.viewer.layers.remove("feat_rgb")
+        if self.napari:
+            if "feat_rgb" in self.viewer.layers:
+                self.viewer.layers.remove("feat_rgb")
 
-        self.viewer.add_image(
-            rgb, 
-            name="feat_rgb", 
-            rgb=True, 
-            blending="additive", 
-            translate=self.offset
-        )
-        print(f"PCA-RGB visualization updated with offset {self.offset}")
+            self.viewer.add_image(
+                rgb, 
+                name="feat_rgb", 
+                rgb=True, 
+                blending="additive", 
+                translate=self.offset
+            )
+            print(f"PCA-RGB visualization updated with offset {self.offset}")
+        else:
+            self.pca_feat = rgb
+            print(f"PCA-RGB visualization created.")
 
     def _get_mask_for_current_crop(self, target_shape) -> Optional[np.ndarray]:
         """
@@ -258,85 +269,86 @@ class NapariSegTool:
         
         return None
 
-    # --- Widget Definitions ---
+    @magicgui(call_button="Build Model", arch={"choices": ["cmpsd", "DPT", "inception_v3"]})
+    def widget_build(self, arch: str = "DPT"):
+        classes = np.unique(self.label)
+        n_classes = max(2, int(len(classes) - 1))
+        
+        if arch == "cmpsd":
+            self.segmodel = build_cmpsd(dims=self.dims, n_classes=n_classes)
+        elif arch == "inception_v3":
+            self.segmodel = build_inception_v3(dims=self.dims, n_classes=n_classes)
+        else:
+            self.segmodel = build_dpt(dims=self.dims, n_classes=n_classes, smooth_params=self.smooth_params)
+        print(f"Built {arch} with {n_classes} classes.")
+
+
+
+    @magicgui(
+        call_button="Train & Eval",
+        epochs={"min": 1, "max": 50},
+        batch_size={"min": 1, "max": 512},
+        lr={"step": 1e-4},
+        patch_d={"widget_type": "LineEdit"},
+        patch_h={"widget_type": "LineEdit"},
+        patch_w={"widget_type": "LineEdit"},
+    )
+    def widget_train_eval(self,
+        epochs=8, batch_size=16, lr=1e-4, 
+        patch_h=1536, patch_w=1536, patch_d=1,
+        # tile_h=1536, tile_w=1536, tile_d=1,
+        tv_denoise_weight=1000 , capture_features=True
+    ):
+        start = time()
+        self.perform_training(epochs, batch_size, lr, (int(patch_d), int(patch_h), int(patch_w)))
+        self.perform_inference((int(patch_d), int(patch_h), int(patch_w)), float(tv_denoise_weight), capture_features)
+        print(f"Total time: {time()-start:.2f}s")
+
+    
+
+    @magicgui(
+        call_button="eval SegHead pretrained",
+    )
+    def eval_widget_predefined(self,
+                    tile_h: int = 1536, tile_w: int = 1536, tile_d: int = 1,
+                    tv_denoise_weight : float = 10000,
+                    capture_features: bool = True):
+        tile_d = int(tile_d)
+        tile_h = int(tile_h)
+        tile_w = int(tile_w)
+        tv_denoise_weight = float(tv_denoise_weight)
+        
+        #define and load the weights from pretrained seg_model 
+        #this pretrained model will predict 8 classes
+        self.segmodel = build_and_load_weights_dpt(dims=self.dims)
+        self.perform_inference((int(tile_d), int(tile_h), int(tile_w)), float(tv_denoise_weight), capture_features)
+
+
+
+
+    @magicgui(call_button="Enable Double-Click Similarity")
+    def widget_similarity(self,):
+        @self.viewer.mouse_double_click_callbacks.append
+        def on_double_click(_viewer, event):
+            if self.feat is None: return
+            pos = self.viewer.cursor.position
+            # Similarity logic here using self.feat and self.offset
+            print(f"Clicked at {pos}")
+    # Docking  # --- Widget Definitions ---
 
     def _init_widgets(self):
         """Define and dock magicgui widgets."""
-        @magicgui(call_button="Build Model", arch={"choices": ["cmpsd", "DPT", "inception_v3"]})
-        def widget_build(arch: str = "DPT"):
-            classes = np.unique(self.label)
-            n_classes = max(2, int(len(classes) - 1))
-            
-            if arch == "cmpsd":
-                self.segmodel = build_cmpsd(dims=self.dims, n_classes=n_classes)
-            elif arch == "inception_v3":
-                self.segmodel = build_inception_v3(dims=self.dims, n_classes=n_classes)
-            else:
-                self.segmodel = build_dpt(dims=self.dims, n_classes=n_classes)
-            print(f"Built {arch} with {n_classes} classes.")
+ 
+        if self.napari:
+            self.viewer.window.add_dock_widget(self.widget_build, area="right", name="1. Build")
+            self.viewer.window.add_dock_widget(self.widget_train_eval, area="right", name="2. Train/Eval")
+            self.viewer.window.add_dock_widget(self.widget_similarity, area="right", name="3. Analysis")
+            self.viewer.window.add_dock_widget(self.eval_widget_predefined, area="right", name="4. Eval Pretrained")
 
-
-
-        @magicgui(
-            call_button="Train & Eval",
-            epochs={"min": 1, "max": 50},
-            batch_size={"min": 1, "max": 512},
-            lr={"step": 1e-4},
-            patch_d={"widget_type": "LineEdit"},
-            patch_h={"widget_type": "LineEdit"},
-            patch_w={"widget_type": "LineEdit"},
-        )
-        def widget_train_eval(
-            epochs=2, batch_size=16, lr=1e-4, 
-            patch_h=1536, patch_w=1536, patch_d=1,
-            # tile_h=1536, tile_w=1536, tile_d=1,
-            tv_denoise_weight=0 , capture_features=True
-        ):
-            start = time()
-            self.perform_training(epochs, batch_size, lr, (int(patch_d), int(patch_h), int(patch_w)))
-            self.perform_inference((int(patch_d), int(patch_h), int(patch_w)), float(tv_denoise_weight), capture_features)
-            print(f"Total time: {time()-start:.2f}s")
-
-        
-
-        @magicgui(
-            call_button="eval SegHead pretrained",
-        )
-        def eval_widget_predefined(tile_h: int = 512, tile_w: int = 512, tile_d: int = 1,
-                       tv_denoise_weight : float = 10000,
-                        capture_features: bool = True):
-            tile_d = int(tile_d)
-            tile_h = int(tile_h)
-            tile_w = int(tile_w)
-            tv_denoise_weight = float(tv_denoise_weight)
-            
-            #define and load the weights from pretrained seg_model 
-            #this pretrained model will predict 8 classes
-            self.segmodel = build_and_load_weights_dpt(dims=self.dims)
-            self.perform_inference((int(tile_d), int(tile_h), int(tile_w)), float(tv_denoise_weight), capture_features)
-
-
-
-
-        @magicgui(call_button="Enable Double-Click Similarity")
-        def widget_similarity():
-            @self.viewer.mouse_double_click_callbacks.append
-            def on_double_click(_viewer, event):
-                if self.feat is None: return
-                pos = self.viewer.cursor.position
-                # Similarity logic here using self.feat and self.offset
-                print(f"Clicked at {pos}")
-        # Docking
-        self.viewer.window.add_dock_widget(widget_build, area="right", name="1. Build")
-        self.viewer.window.add_dock_widget(widget_train_eval, area="right", name="2. Train/Eval")
-        self.viewer.window.add_dock_widget(widget_similarity, area="right", name="3. Analysis")
-        self.viewer.window.add_dock_widget(eval_widget_predefined, area="right", name="4. Eval Pretrained")
-
-
-def add_ui(viewer: napari.Viewer,dims) -> NapariSegTool:
+def add_ui(viewer: napari.Viewer,dims,napari=True) -> NapariSegTool:
     # Entry point
     #TODO: automatic dims detection based on ROI shape
-    seg_tool = NapariSegTool(viewer,dims)
+    seg_tool = NapariSegTool(viewer,dims,napari=napari)
     return seg_tool
 
 
@@ -355,7 +367,7 @@ def main() -> None:
         for ln in names:
             viewer.layers[ln].visible = not viewer.layers[ln].visible
 
-    seg_tool = add_ui(viewer,dims=dims)
+    seg_tool = add_ui(viewer,dims=dims,napari=NAPARI)
     # show_orthogonal_views(viewer)
     napari.run()
 

@@ -68,7 +68,7 @@ def build_cmpsd(dims: int, n_classes: int,) -> Modelsegmodel:
 from transformers import AutoModel
 from lib.arch.segdino import Dinov3HFBackbone,DPT
 
-def build_dpt(dims: int, n_classes: int, ) -> Modelsegmodel:
+def build_dpt(dims: int, n_classes: int, smooth_params=(16,4,1)) -> Modelsegmodel:
     """Build DPT with DINOv3-like backbone + DPTHead.
 
     Notes:
@@ -81,7 +81,7 @@ def build_dpt(dims: int, n_classes: int, ) -> Modelsegmodel:
         model_dir, local_files_only=True, output_hidden_states=True
     ).eval()
     backbone = Dinov3HFBackbone(hf_backbone)
-    seg_model = DPT(nclass=n_classes,backbone=backbone)
+    seg_model = DPT(nclass=n_classes,backbone=backbone,smooth_params= smooth_params)
     seg_model.train()
 
     #freeze backbone

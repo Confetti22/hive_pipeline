@@ -157,7 +157,7 @@ def load_t1779_3():
 
 
 
-def load_t1779_1(region_key: str = "2_3",three_d=False,DOWNSAMPLE=False):
+def load_t1779_1(region_key: str = "2_3",three_d=False,down_factor= 0):
     """
     if thee_d is True, will not using mip
 
@@ -188,10 +188,13 @@ def load_t1779_1(region_key: str = "2_3",three_d=False,DOWNSAMPLE=False):
     label = np.squeeze(label) if label is not None else None
     mask = tif.imread(mask_path) if mask_path is not None else None
     mask = np.squeeze(mask) if mask is not None else None   
-    if DOWNSAMPLE is True:
-        roi = zoom(roi, zoom=0.25, order=1)  # downsample to 0.5x for faster testing
-        label = zoom(label, zoom=0.25, order=0)  if label is not None else None
-        mask = zoom(mask, zoom=0.25, order=0)  if mask is not None else None
+    if down_factor != 0: 
+        zoom_factor = 1 / (2 ** down_factor)
+        roi = zoom(roi, zoom=(zoom_factor,zoom_factor,1), order=1)  # downsample to 0.5x for faster testing
+        label = zoom(label, zoom=zoom_factor, order=0)  if label is not None else None
+        mask = zoom(mask, zoom=zoom_factor, order=0)  if mask is not None else None
+    
+    #pad the label and mask to be same shape as 3d roi
     if three_d:
         z = roi.shape[0]
         half_z = int(z/2)
