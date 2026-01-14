@@ -32,6 +32,7 @@ from __future__ import annotations
 import os
 import sys
 import numpy as np
+import tifffile as tif
 import torch
 # setting a short tensor print format for easier debugging
 torch.set_printoptions(edgeitems=1, threshold=10, linewidth=120)
@@ -51,7 +52,7 @@ from confettii.plot_helper import three_pca_as_rgb_image
 # ----------------------------------
 # Project bootstrap (repo root import)
 # ----------------------------------
-DOWN_FACTOR= 0 
+DOWN_FACTOR= 1 
 NAPARI = True
 
 PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -94,12 +95,14 @@ class NapariSegTool:
 
     def _initialize_data(self):
         """Load initial datasets."""
-        roi, label, mask = load_t1779_1(region_key='2_3', three_d = (self.dims==3),down_factor=DOWN_FACTOR)
+        roi, label, mask = load_t1779_1(region_key='3_3', three_d = (self.dims==3),down_factor=DOWN_FACTOR)
         
         # roi, label, mask = load_3d_rm009() 
         # roi, label, mask = load_t1779_2()
         roi_shape = roi.shape[:self.dims]
-        # label = None
+        roi = tif.imread("/home/confetti/data/t1779/interactive_step/3_1_roi.tif")
+        label = tif.imread("/home/confetti/data/t1779/interactive_step/3_1_label1.tif")
+        
         
         self.roi = roi
         self.label = label if label is not None else np.zeros(roi_shape, dtype=np.uint8)
@@ -269,7 +272,7 @@ class NapariSegTool:
         
         return None
 
-    @magicgui(call_button="Build Model", arch={"choices": ["cmpsd", "DPT", "inception_v3"]})
+
     def widget_build(self, arch: str = "DPT"):
         classes = np.unique(self.label)
         n_classes = max(2, int(len(classes) - 1))
@@ -286,6 +289,7 @@ class NapariSegTool:
 
     @magicgui(
         call_button="Train & Eval",
+        arch={"choices": ["cmpsd", "DPT", "inception_v3"]},
         epochs={"min": 1, "max": 50},
         batch_size={"min": 1, "max": 512},
         lr={"step": 1e-4},
@@ -294,11 +298,14 @@ class NapariSegTool:
         patch_w={"widget_type": "LineEdit"},
     )
     def widget_train_eval(self,
-        epochs=8, batch_size=16, lr=1e-4, 
+        arch: str = "DPT",
+        epochs=15, batch_size=16, lr=1e-4, 
         patch_h=1536, patch_w=1536, patch_d=1,
         # tile_h=1536, tile_w=1536, tile_d=1,
         tv_denoise_weight=1000 , capture_features=True
     ):
+        self.widget_build(arch=arch)
+        print(f"{arch} has been build ")
         start = time()
         self.perform_training(epochs, batch_size, lr, (int(patch_d), int(patch_h), int(patch_w)))
         self.perform_inference((int(patch_d), int(patch_h), int(patch_w)), float(tv_denoise_weight), capture_features)
@@ -340,10 +347,9 @@ class NapariSegTool:
         """Define and dock magicgui widgets."""
  
         if self.napari:
-            self.viewer.window.add_dock_widget(self.widget_build, area="right", name="1. Build")
-            self.viewer.window.add_dock_widget(self.widget_train_eval, area="right", name="2. Train/Eval")
-            self.viewer.window.add_dock_widget(self.widget_similarity, area="right", name="3. Analysis")
-            self.viewer.window.add_dock_widget(self.eval_widget_predefined, area="right", name="4. Eval Pretrained")
+            self.viewer.window.add_dock_widget(self.widget_train_eval, area="right", name="1. Train/Eval")
+            self.viewer.window.add_dock_widget(self.widget_similarity, area="right", name="2. Analysis")
+            self.viewer.window.add_dock_widget(self.eval_widget_predefined, area="right", name="3. Eval Pretrained")
 
 def add_ui(viewer: napari.Viewer,dims,napari=True) -> NapariSegTool:
     # Entry point
