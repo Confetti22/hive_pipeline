@@ -121,7 +121,7 @@ class DPTHead(nn.Module):
         self.scratch.stem_transpose = None
         self.scratch.output_conv = nn.Conv2d(features*4, nclass, kernel_size=1, stride=1, padding=0)  
 
-    def forward(self, out_features, patch_h, patch_w):
+    def forward(self, out_features, patch_h,patch_w):
         if len(out_features) != self.num_features:
             raise ValueError(f"Expected {self.num_features} features, got {len(out_features)}")
 
@@ -139,6 +139,31 @@ class DPTHead(nn.Module):
         fused = torch.cat(upsampled, dim=1)
         return self.scratch.output_conv(fused)
 
+
+class DPTHead_warped(nn.Module):
+        def __init__(
+            self, 
+            nclass,
+            in_channels, 
+            features=128, 
+            use_bn=False, 
+            out_channels=[256, 512, 1024],
+            patch_h = None,
+            patch_w = None,
+            ):  
+            super(DPTHead_warped, self).__init__()
+            self.patch_h = patch_h
+            self.patch_w = patch_w
+            self.head = DPTHead(nclass, in_channels, features, use_bn, out_channels)
+
+        def forward(self, out_features, scale_factor=16):
+            out = self.head(out_features, self.patch_h, self.patch_w)
+            B,C,H,W = out.shape
+            # blur = GaussianBlur(kernel_size=3, sigma=1)
+            # features = blur(features)
+            out = F.interpolate(out, (out.shape[-2]*scale_factor, out.shape[-1]*scale_factor), mode='bilinear', align_corners=True)
+    
+            return out
 
 
 class DPT(nn.Module):
@@ -211,7 +236,6 @@ class DPT(nn.Module):
          
         out = self.upsample_feature_map(out, scale_factor=16)
 
-
         return out #logits
     
     def upsample_feature_map(self, features, scale_factor):
@@ -234,8 +258,6 @@ class DPT(nn.Module):
             features = blur(features)
             out = F.interpolate(features, (features.shape[-2]*scale_factor, features.shape[-1]*scale_factor), mode='bilinear', align_corners=True)
         return out
-
-
 
     def compute_feature_map(self,features,patch_h, patch_w):
         "concated feature from 4 layer and upsample to patch_h, patch_w"

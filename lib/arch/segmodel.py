@@ -66,7 +66,7 @@ def build_cmpsd(dims: int, n_classes: int,) -> Modelsegmodel:
 
 ##### DPT ######
 from transformers import AutoModel
-from lib.arch.segdino import Dinov3HFBackbone,DPT
+from lib.arch.segdino import Dinov3HFBackbone,DPT,DPTHead_warped
 
 def build_dpt(dims: int, n_classes: int, smooth_params=(16,4,1)) -> Modelsegmodel:
     """Build DPT with DINOv3-like backbone + DPTHead.
@@ -90,6 +90,17 @@ def build_dpt(dims: int, n_classes: int, smooth_params=(16,4,1)) -> Modelsegmode
     print("\n","unfrozen model's layer name",[f"{n}" for n, p in seg_model.named_parameters() if  p.requires_grad],"\n")
 
     return Modelsegmodel("DPT", dims,seg_model,n_classes)
+
+
+def build_seg_head(dims: int, n_classes: int,patch_h, patch_w) -> Modelsegmodel:
+
+    seg_model = DPTHead_warped(n_classes, 768, features=128,use_bn=False , out_channels=[96, 192, 384, 768],patch_h=patch_h,patch_w=patch_w)
+    seg_model.train()
+
+    print("\n","unfrozen model's layer name",[f"{n}" for n, p in seg_model.named_parameters() if  p.requires_grad],"\n")
+
+    return Modelsegmodel("DPT", dims,seg_model,n_classes)
+
 
 
 

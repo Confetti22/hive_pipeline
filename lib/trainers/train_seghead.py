@@ -11,6 +11,7 @@ def train_seghead(segmodel: Modelsegmodel,
                   device: str = "cuda",
                   epochs: int = 5,
                   batch_size: int = 64,
+                  precomute_feat: bool = False,
                   lr: float = 1e-3) -> None:
     """Train only the seghead with the backbone frozen.
 
@@ -39,19 +40,26 @@ def train_seghead(segmodel: Modelsegmodel,
     torch.autograd.set_detect_anomaly(True)
     for n_epoch in range(epochs):
         for x, y in loader:
-            x = x.to(device)
+            if not precomute_feat:
+                x = x.to(device)
+
             y = y.to(device)
             y = y.squeeze(1) 
-            if x.shape[2] ==1:
-                x = x.squeeze(2)
-            if segmodel.name == "DPT" and x.dim() == 5:
-                # slice 3D into 2D batches externally
-                B, C, D, H, W = x.shape
-                x2d = x.permute(0, 2, 1, 3, 4).reshape(B * D, C, H, W)
-                logits2d = segmodel.seg_model(x2d)  # [B*D, C', H, W]
-                logits = logits2d.reshape(B, D, n_classes, H, W).permute(0, 2, 1, 3, 4)
+            
+            if precomute_feat:  #seg_model is just the seghead
+                x = [feat.squeeze(0)for feat in x] #dataloader will add extra batch dim
+                logits = segmodel.seg_model(x) 
             else:
-                logits = segmodel.seg_model(x) #[B,C,D,H,W] or [B,C,H,W]
+                if x.shape[2] ==1:
+                    x = x.squeeze(2)
+                if segmodel.name == "DPT" and x.dim() == 5:
+                    # slice 3D into 2D batches externally
+                    B, C, D, H, W = x.shape
+                    x2d = x.permute(0, 2, 1, 3, 4).reshape(B * D, C, H, W)
+                    logits2d = segmodel.seg_model(x2d)  # [B*D, C', H, W]
+                    logits = logits2d.reshape(B, D, n_classes, H, W).permute(0, 2, 1, 3, 4)
+                else:
+                    logits = segmodel.seg_model(x) #[B,C,D,H,W] or [B,C,H,W]
 
             # Align logits & labels to same spatial dims
             if logits.dim() == y.dim() + 1:# 2D: logits [B,C,H,W], y [B,H,W] OK# 3D: logits [B,C,D,H,W], y [B,D,H,W] OK

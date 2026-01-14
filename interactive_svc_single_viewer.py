@@ -42,18 +42,20 @@ import napari
 from time import time
 from magicgui import magicgui
  
-from lib.arch.segmodel import build_cmpsd, build_dpt, build_and_load_weights_dpt,build_inception_v3
+from lib.arch.segmodel import build_cmpsd, build_dpt, build_and_load_weights_dpt,build_inception_v3, build_seg_head
 from lib.utils.preprocess_img import  pad_to_multiple
 from helper.napari_view_utilis import find_valid_rectangle_bbox_from_shapes 
 from lib.datasets.sparse_label_dataset import SparseLabelSegDataset
+from lib.datasets.sparse_label_feats_dataset import SparseLabelFeatsDataset
 from lib.datasets.load_rois import load_t1779_1,load_t1779_2, load_3d_rm009
 
 from confettii.plot_helper import three_pca_as_rgb_image
 # ----------------------------------
 # Project bootstrap (repo root import)
 # ----------------------------------
-DOWN_FACTOR= 1 
+DOWN_FACTOR= 0 
 NAPARI = True
+PRECOMPUTE_FEAT = False 
 
 PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_DIR not in sys.path:
@@ -85,6 +87,8 @@ class NapariSegTool:
         self.pca_feat: Optional[np.ndarray] = None
         self.offset = (0, 0, 0) if dims == 3 else (0, 0)
         self.final_roi = None
+        self.patch_h =0
+        self.patch_w = 0
         # UI Config
 
         self._initialize_data()
@@ -97,12 +101,7 @@ class NapariSegTool:
         """Load initial datasets."""
         roi, label, mask = load_t1779_1(region_key='3_3', three_d = (self.dims==3),down_factor=DOWN_FACTOR)
         
-        # roi, label, mask = load_3d_rm009() 
-        # roi, label, mask = load_t1779_2()
         roi_shape = roi.shape[:self.dims]
-        roi = tif.imread("/home/confetti/data/t1779/interactive_step/3_1_roi.tif")
-        label = tif.imread("/home/confetti/data/t1779/interactive_step/3_1_label1.tif")
-        
         
         self.roi = roi
         self.label = label if label is not None else np.zeros(roi_shape, dtype=np.uint8)
@@ -127,17 +126,30 @@ class NapariSegTool:
         imagenet_preproc = self.segmodel.name in ["DPT", "inception_v3"] # Simplified check
 
 
-        ds = SparseLabelSegDataset(
-            self.roi, self.label, dims=self.dims, 
-            patch_size=patch_size, imagenet_preproc=imagenet_preproc
-        )
+        if PRECOMPUTE_FEAT:
+            ds = SparseLabelFeatsDataset(
+                self.roi, self.label, dims=self.dims, 
+                patch_size=patch_size, imagenet_preproc=imagenet_preproc
+            )
+        else:
+            ds = SparseLabelSegDataset(
+                self.roi, self.label, dims=self.dims, 
+                patch_size=patch_size, imagenet_preproc=imagenet_preproc
+            )
+
         n_classes = max(2, len(np.unique(self.label)) - 1)
         device = "cuda" if torch.cuda.is_available() else "cpu"
         
         train_seghead(self.segmodel, ds, n_classes=n_classes, device=device,
-                      epochs=epochs, batch_size=batch_size, lr=lr)
+                      epochs=epochs, batch_size=batch_size, lr=lr, precomute_feat=PRECOMPUTE_FEAT)
         print("Training finished.")
 
+
+    def _load_train_seghead_to_DPT(self):
+        seg_head_state_dict = self.segmodel.seg_model.head.state_dict()
+        self.segmodel = build_dpt(dims=self.dims, n_classes=self.segmodel.n_classes, smooth_params=self.smooth_params)
+        res = self.segmodel.seg_model.head.load_state_dict(seg_head_state_dict)
+        print(f"Loaded seghead weights into DPT: {res}")
 
     def perform_inference(self, tile_size: tuple, tv_weight: float, capture_features: bool):
         """The core inference/evaluation logic."""
@@ -145,6 +157,9 @@ class NapariSegTool:
             print("Error: Model or ROI missing.")
             return
         device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        if PRECOMPUTE_FEAT:
+            self._load_train_seghead_to_DPT()
         self.segmodel.seg_model.eval()
         self.segmodel.seg_model.to(device)
         # Handle Bounding Box / ROI selection
@@ -281,8 +296,16 @@ class NapariSegTool:
             self.segmodel = build_cmpsd(dims=self.dims, n_classes=n_classes)
         elif arch == "inception_v3":
             self.segmodel = build_inception_v3(dims=self.dims, n_classes=n_classes)
+        elif arch == "DPT":
+            if PRECOMPUTE_FEAT:
+                self.segmodel = build_seg_head(dims=self.dims, n_classes=n_classes,patch_h=self.patch_h,patch_w=self.patch_w)
+            else:
+                self.segmodel = build_dpt(dims=self.dims, n_classes=n_classes, smooth_params=self.smooth_params)
+                
         else:
-            self.segmodel = build_dpt(dims=self.dims, n_classes=n_classes, smooth_params=self.smooth_params)
+            print(f"Error: Unknown architecture '{arch}'.")
+            return
+
         print(f"Built {arch} with {n_classes} classes.")
 
 
@@ -302,14 +325,22 @@ class NapariSegTool:
         epochs=15, batch_size=16, lr=1e-4, 
         patch_h=1536, patch_w=1536, patch_d=1,
         # tile_h=1536, tile_w=1536, tile_d=1,
-        tv_denoise_weight=1000 , capture_features=True
+        tv_denoise_weight=0 , capture_features=True
     ):
-        self.widget_build(arch=arch)
-        print(f"{arch} has been build ")
+        #ungly temporary patch_h, pathch_w compute for precompute
         start = time()
+        self.patch_h = int(min(int(patch_h),self.roi.shape[0])//16)
+        self.patch_w = int(min(int(patch_w),self.roi.shape[1])//16)
+        self.widget_build(arch=arch)
+        current1 = time()
+        print(f"{arch} has been build ,{current1 - start:.2f}s elapsed")
+
         self.perform_training(epochs, batch_size, lr, (int(patch_d), int(patch_h), int(patch_w)))
+        current2 = time()
+        print(f"Training completed ,{current2 - current1:.2f}s elapsed")
+        
         self.perform_inference((int(patch_d), int(patch_h), int(patch_w)), float(tv_denoise_weight), capture_features)
-        print(f"Total time: {time()-start:.2f}s")
+        print(f"inference time: {time() -current2:.2f}s, Total time: {time()-start:.2f}s")
 
     
 
