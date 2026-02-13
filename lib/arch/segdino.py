@@ -449,3 +449,36 @@ class DPT(nn.Module):
             return self.feature_map
         else:
             return None
+class LinearTokenSeg(nn.Module):
+    """
+    Minimal segmentation head: a single linear projection on the final DINOv3 tokens.
+    """
+    def __init__(self, backbone, nclass=8, encoder_size='base'):
+        super().__init__()
+        self.backbone = backbone
+        self.encoder_size = encoder_size
+        self.classifier = nn.Linear(self.backbone.embed_dim, nclass)
+        self.layer_idx = {
+            'small': [11],
+            'base': [11],
+        }
+        self.patch_size = getattr(self.backbone, 'patch_size', 16)
+
+    def lock_backbone(self):
+        for p in self.backbone.parameters():
+            p.requires_grad = False
+
+    def forward(self, x):
+        patch_h, patch_w = x.shape[-2] // self.patch_size, x.shape[-1] // self.patch_size
+        features = self.backbone.get_intermediate_layers(
+            x, n=self.layer_idx.get(self.encoder_size, self.layer_idx['base'])
+        )
+        tokens = features[-1]  # [B, HW, C]
+        logits = self.classifier(tokens)  # [B, HW, nclass]
+        B = logits.shape[0]
+        logits = logits.permute(0, 2, 1).reshape(B, -1, patch_h, patch_w)
+        logits = F.interpolate(
+            logits, (patch_h * self.patch_size, patch_w * self.patch_size), mode='bilinear', align_corners=True
+        )
+        return logits
+

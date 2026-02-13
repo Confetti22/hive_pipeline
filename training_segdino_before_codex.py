@@ -1,33 +1,27 @@
-#%%
-import itertools                      
 import math, os
 import numpy as np
 import shutil
 import torch
 import torch.nn.functional as F
-import torch.nn as nn
-import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
+import matplotlib.pyplot as plt
 from config.load_config import load_cfg
 import json
 
 from lib.utils.html_logger import HTMLFigureLogger
 from lib.datasets.simple_segdataset import get_dataset 
-
 from lib.core.metric import accuracy, compute_per_class_metrics, merge_metric_lists, summarize_seg_metrics, format_metric_stats
 
-import math
 
-from typing import Sequence, Tuple, Union, Literal, List
+from typing import Sequence, Union
 Arr   = Union[np.ndarray, torch.Tensor]
 Array = Union[Arr, Sequence[Arr]]   # single array or list/tuple of arrays
 
 NUM_CLASSES = 8  # default, overridden by config
 
 # ───────────────────────── feature hooks ──────────────────────────
-import numpy as np
 
 def bnd_seg_valid(img_logger, valid_loader, seg_model,epoch):
     """
@@ -175,7 +169,6 @@ def bnd_seg_valid(img_logger, valid_loader, seg_model,epoch):
     return avg_valid_loss, avg_top1, avg_top3, avg_ce_loss, avg_dice_loss 
 
  
-#%%
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 cfg_path = os.environ.get('SEGDINO_CFG', 'config/segdino.yaml')
 args = load_cfg(cfg_path)
