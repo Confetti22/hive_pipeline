@@ -52,8 +52,6 @@ def _ensure_tensor_chw_or_cdhw(img: np.ndarray, dims: int,model_name:str) -> tor
     return t
 
 
-
-
 def pad_to_multiple_of_unit(img,unit = 8):
     H, W = img.shape[-2:]  # assuming shape [..., H, W]
 

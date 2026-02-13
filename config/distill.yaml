@@ -31,6 +31,7 @@ tinyvit_implementation: timm # or timm (only used when student_type: tinyvit)
 # Data Preprocessing
 crop_size: null # Optional central crop size (e.g., 224, 256, 512). If null, no cropping is applied.
 use_mixup:  False # Apply mixup augmentation with coefficients sampled uniformly from [0,1]
+use_aug: True
 
 # TinyViT Model Architecture (only used when student_type: tinyvit)
 tinyvit_depth: 12 # Number of transformer layers (6-24 recommended)

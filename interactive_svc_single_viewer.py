@@ -53,7 +53,7 @@ from confettii.plot_helper import three_pca_as_rgb_image
 # ----------------------------------
 # Project bootstrap (repo root import)
 # ----------------------------------
-DOWN_FACTOR= 0 
+DOWN_FACTOR= 1 
 NAPARI = True
 PRECOMPUTE_FEAT = False 
 
@@ -221,8 +221,7 @@ class NapariSegTool:
         mask_bool = self._get_mask_for_current_crop(spatial_shape)
 
         # 3. Calculate PCA
-        # If a mask exists, we only compute PCA on pixels inside the mask to 
-        # prevent background noise from dominating the color variance.
+        # If a mask exists, we only compute PCA on pixels inside the mask 
         if mask_bool is not None and mask_bool.any():
             mask_flat = mask_bool.reshape(-1)
             rgb_flat = np.zeros((mask_flat.size, 3), dtype=np.float32)
@@ -322,10 +321,11 @@ class NapariSegTool:
     )
     def widget_train_eval(self,
         arch: str = "DPT",
-        epochs=15, batch_size=16, lr=1e-4, 
+        epochs=6, batch_size=16, lr=1e-4, 
         patch_h=1536, patch_w=1536, patch_d=1,
         # tile_h=1536, tile_w=1536, tile_d=1,
-        tv_denoise_weight=0 , capture_features=True
+        tv_denoise_weight=0.1 , capture_features=True
+
     ):
         #ungly temporary patch_h, pathch_w compute for precompute
         start = time()

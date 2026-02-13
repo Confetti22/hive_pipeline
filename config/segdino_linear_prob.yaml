@@ -1,0 +1,48 @@
+#save_dir
+exp_name : "seg_dino_linear_prob_metrics_batch16_1zmip"
+exp_save_dir: "outs/seg_dino"
+
+# system
+test_mode: False 
+e5: True 
+device: cuda
+# removed unused: gpu_ids, num_gpus, num_cpus
+
+num_classes: 9
+
+# loss:
+supervised_loss: True 
+recon_loss: False 
+
+# trainer:
+save_every: 5 #save frequency
+epochs: 50
+valid_very_epoch: 5
+# removed unused: trainer_name, save_very_epoch, fp16, tsne_emb
+
+# solver:
+lr_start: 5e-4
+optimizer: adamw
+lr_warmup: 2
+# removed unused: optimizer, lr_scheduler_name
+
+# dataset:
+batch_per_gpu: 16
+num_workers: 0
+shuffle: true
+# removed unused: dataset_name, feats_level, feats_avg_kernel
+
+
+data_path_dir : "/home/confetti/data/rm009/boundary_seg/new_boundary_seg_data/1zmlp_rois"
+mask_path_dir : "/home/confetti/data/rm009/boundary_seg/new_boundary_seg_data/masks"
+valid_data_path_dir : "/home/confetti/data/rm009/boundary_seg/new_boundary_seg_data/1zmlp_rois_valid"
+valid_mask_path_dir : "/home/confetti/data/rm009/boundary_seg/new_boundary_seg_data/masks_valid"
+
+e5_data_path_dir : "/share/home/shiqiz/data/rm009/boundary_seg/new_boundary_seg_data/1zmlp_rois"
+e5_mask_path_dir : "/share/home/shiqiz/data/rm009/boundary_seg/new_boundary_seg_data/masks"
+e5_valid_data_path_dir : "/share/home/shiqiz/data/rm009/boundary_seg/new_boundary_seg_data/1zmlp_rois_valid"
+e5_valid_mask_path_dir : "/share/home/shiqiz/data/rm009/boundary_seg/new_boundary_seg_data/masks_valid"
+
+# model head:
+use_linear_head: True # when true, use a single-layer MLP head instead of DPT
+# removed unused: recon_target_dir*, bnd_path_dir*

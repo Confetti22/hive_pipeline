@@ -29,6 +29,7 @@ from lib.distill import (
 )
 
 from lib.distill.student import build_student_cnn
+from lib.utils.augmentations import GPUAugmentations
 
 def _validate_paths(paths: List[str], max_count: int | None = None) -> List[str]:
     files: List[str] = []
@@ -93,6 +94,7 @@ def main():
     scheduler_warmup_epochs = int(cfg.get('scheduler_warmup_epochs', 5))
     scheduler_min_lr = float(cfg.get('scheduler_min_lr', 1e-6))
     use_mixup = bool(cfg.get('use_mixup', False))
+    use_aug = bool(cfg.get('use_aug', False))
     
     # Model saving configuration
     save_every_epoch = int(cfg.get('save_every_epoch', 0))
@@ -115,12 +117,11 @@ def main():
         print(f"[SYSTEM] cuDNN version: {torch.backends.cudnn.version()}")
         print(f"[SYSTEM] CUDA device capability: {torch.cuda.get_device_capability()}")
 
-    ds = GrayTiffDataset(train_paths, crop_size=crop_size)
+    ds = GrayTiffDataset(train_paths)
     dl = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
+    augmentor = GPUAugmentations(size=crop_size).to(device)
 
     # Build student CNN when requested; users should provide a factory in their codebase
-
-
     
 
     distiller = Distiller(
@@ -225,6 +226,10 @@ def main():
     for ep in range(epochs):
         for batch_idx, (x_rgb, image_ids) in enumerate(dl):
             x_rgb = x_rgb.to(device, non_blocking=True)
+            #data augmentation
+            if use_aug:
+                x_rgb = augmentor(x_rgb)
+
             if use_mixup:
                 # Mixup coefficients sampled uniformly in [0, 1]
                 lam = torch.rand(x_rgb.size(0), device=device, dtype=x_rgb.dtype).view(-1, 1, 1, 1)
