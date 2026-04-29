@@ -10,9 +10,10 @@ from torch.utils.data import Dataset,DataLoader
 from torch.utils.tensorboard import SummaryWriter
 import torch
 from distance_contrast_helper import simple_eval, HTMLFigureLogger
-from helper.contrastive_train_helper import cos_loss,cos_loss_topk,valid_from_roi,get_t11_eval_data, MLP,Contrastive_dataset_3d
+from helper.contrastive_train_helper import valid_from_roi,get_t11_eval_data, MLP,Contrastive_dataset_3d
+from lib.loss.cos_loss import  ContrastiveLoss
 from config.load_config import load_cfg
-from lib.arch.ae import build_cmpsd_model,load_compose_encoder_dict
+from lib.arch.ae import build_contrastive_model,load_compose_encoder_dict
 import time
 import os
 import shutil
@@ -118,7 +119,7 @@ for epoch in range(start_epoch,num_epochs):
         optimizer.zero_grad()
         out = model(batch) 
         out = out.squeeze()
-        loss,pos_cos,neg_cos = cos_loss_topk(features=out,n_views=n_views,pos_weight_ratio=pos_weight_ratio,only_pos=  True)
+        loss,pos_cos,neg_cos = ContrastiveLoss(features=out,n_views=n_views,pos_weight_ratio=pos_weight_ratio,only_pos=  True)
         # loss,pos_cos,neg_cos = cos_loss(features=out,n_views=n_views,pos_weight_ratio=pos_weight_ratio)
 
         loss.backward() 

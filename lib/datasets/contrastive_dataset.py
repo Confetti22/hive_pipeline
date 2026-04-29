@@ -6,6 +6,8 @@ from pathlib import Path
 
 from helper.image_reader import Ims_Image
 
+from lib.utils.preprocess_img import preprocess_uint16_for_imagenet, to_cdhw
+
 # You also need to modify your generate_sphereshell__shifts function to accept a `dims` argument.
 def generate_sphereshell__shifts(R, r=0, dims=3):
     """Generate integer shifts within a sphere shell (radius R, inner radius r)."""
@@ -23,18 +25,19 @@ class Contrastive_dataset_3d_one_stage(Dataset):
     """
     sample roi in ims file; return positive roi pairs and negative roi pairs for contrastive_learning
     """
-    def __init__ (self,ims_path,d_near,num_pairs,n_view = 2,verbose = False):
+    def __init__ (self,ims_path,d_near,num_pairs,n_view = 2,verbose = False,normalize=True,roi_size=(32,32,32),channel=0,img_level =0):
 
-        self.ims_vol =Ims_Image(ims_path,channel=0) 
-        level = 0
+        self.ims_vol =Ims_Image(ims_path,channel=channel) 
+        level = img_level
         D,H,W= self.ims_vol.rois[level][3:]
         d_near = int(d_near) 
+        self.roi_size = roi_size
 
         margin = 10 
         # Generate random (x, y, z) locations within the given range
-        lz, hz = d_near + margin +int(D//4),  int(D*3/4) - d_near - margin
-        ly, hy = d_near + margin +int(H//4),  int(H*3/4) - d_near - margin
-        lx, hx = d_near + margin +int(W//4),  int(W//2) - d_near - margin
+        lz, hz = d_near + margin +int(D//6),  int(D*5/6) - d_near - margin
+        ly, hy = d_near + margin +int(H//6),  int(H*5/6) - d_near - margin
+        lx, hx = d_near + margin +int(W//6),  int(W*5/6) - d_near - margin
 
         self.loc_lst = np.stack([
             np.random.randint(lz, hz, size=num_pairs),
@@ -43,37 +46,47 @@ class Contrastive_dataset_3d_one_stage(Dataset):
         ], axis=1)
 
         self.sample_num = num_pairs
-        self.all_near_shifts = generate_sphereshell__shifts(R= d_near,r= 24 ,dims=3)
+        self.all_near_shifts = generate_sphereshell__shifts(R= d_near,r= 4,dims=3)
         self.n_view =n_view
+        self.normalize = normalize
+        self.make_3ch = False
 
 
     def __len__(self):
         return self.sample_num
     
+    def _preprocess(self, img):
+        process = lambda x: preprocess_uint16_for_imagenet(
+                x,
+                make_3ch=self.make_3ch,
+            )
+        if self.normalize:
+            img = process(img)
+        else:
+            img = img.astype(np.float32)
+        return to_cdhw(img, make_3ch=self.make_3ch)  # (C,D,H,W)
+
     def __getitem__(self,idx):
 
-        z, y, x = self.loc_lst[idx].T    # Unpack coordinates
-        roi = self.ims_vol.from_roi(coords=(z,y,x,64,64,64))
-        roi = roi.astype(np.float32)
-        roi=torch.from_numpy(roi)
-        roi=torch.unsqueeze(roi,0)
+        z,y,x = self.loc_lst[idx].T
+        roi = self.get_roi_given_loc( [z,y,x])
         # for each call, the positive pair is resampled within the near_shifts range, 
         # maybe fix the positive pair will be better for stable training
         pair_locs = [self.positve_pair_loc_generate([z,y,x]) for _ in range(self.n_view -1)]
         pair_roi = [self.get_roi_given_loc(pair_loc) for pair_loc in pair_locs]
-        res = [roi]
+        res = [self._preprocess(roi)]
         for pair in pair_roi:
-            res.append(pair)
+            res.append(self._preprocess(pair))
 
         #res: x1,neigb1(x1),neigb2(x1),..,neigbN(x1)
         return res
 
     def get_roi_given_loc(self,loc):
         z, y, x = loc   # Unpack coordinates
-        roi = self.ims_vol.from_roi(coords=(z,y,x,64,64,64))
+        s_z,s_y,s_x = self.roi_size
+        roi = self.ims_vol.from_roi(coords=(z,y,x,s_z,s_y,s_x))
+        roi = np.squeeze(roi)
         roi = roi.astype(np.float32)
-        roi=torch.from_numpy(roi)
-        roi=torch.unsqueeze(roi,0)
         return roi 
 
     def positve_pair_loc_generate(self,loc):

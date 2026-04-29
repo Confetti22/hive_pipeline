@@ -166,7 +166,7 @@ from helper.contrastive_train_helper import (
     log_layer_embeddings,
 )
 
-from lib.arch.ae import build_cmpsd_model, load_compose_encoder_dict
+from lib.arch.ae import build_contrastive_model, load_compose_encoder_dict
 
 Arr   = Union[np.ndarray, torch.Tensor]
 Array = Union[Arr, Sequence[Arr]]   # single array or list/tuple of arrays
@@ -204,7 +204,7 @@ cfg.avg_pool_size = [8,8,8]
 cfg.last_encoder= True
 cfg.e5 = False
 
-cmpsd_model = build_cmpsd_model(cfg).to(device)
+cmpsd_model = build_contrastive_model(cfg).to(device)
 cmpsd_model.eval()
 register_hooks(cmpsd_model.cnn_encoder, "cnn.")
 register_hooks(cmpsd_model.mlp_encoder, "mlp.")

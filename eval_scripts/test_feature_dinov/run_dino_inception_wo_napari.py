@@ -21,35 +21,31 @@ from lib.utils.test_scene import get_path_map
 from lib.utils.test_scene import load_t1779
 from interactive_svc_single_viewer import NapariSegTool
 
-DOWNSAMPLE = False 
+DOWNFACTOR = 0
 NAPARI = False 
-SAVE_PARENT = '/home/confetti/data/t1779/scenes_dpt_smooth'
+
+SAVE_PARENT = '/home/confetti/data/t1779/contrastive_pretrained_d1' #used to save pred and pca of this run
 PARENT_RESULTS = SAVE_PARENT +"/results"
 os.makedirs(SAVE_PARENT, exist_ok=True)   
 os.makedirs(PARENT_RESULTS, exist_ok=True)
 
-def gennerate_pred_pca(arch_list:Optional[Sequence[str]],keys=None,smooth_params=(16,4,1)):
+def gennerate_pred_pca(arch_list:Optional[Sequence[str]],model_dir_list:Optional[Sequence[str]],keys=None,smooth_params=(16,4,1)):
     # for arch in ['inception_v3','dpt','s_tinyvit','s_tinyvittimm']:
     
     keys = get_path_map().keys() if keys is None else keys
     arch_list = ['dpt'] if arch_list is None else arch_list
 
-    for arch in arch_list:
+    for arch,model_dir in zip(arch_list,model_dir_list):
         for key in keys: 
             print(f"begin processing region: {key}")
-            dims=2
-            roi,label,mask,gt= load_t1779(region_key=key, DOWNSAMPLE = DOWNSAMPLE)
-            seg_tool = NapariSegTool(viewer=None, dims=dims, napari=NAPARI, smooth_params=smooth_params)
-            seg_tool.roi = roi
-            seg_tool.label = label if label is not None else np.zeros(roi.shape,dtype=np.uint8)
-            seg_tool.mask =  mask if mask is not None else np.ones(roi.shape,dtype=bool)
-            gt =  gt if gt is not None else np.zeros(roi.shape,dtype=np.uint8)
+            dims=3
+            seg_tool = NapariSegTool(viewer=None, dims=dims, napari=NAPARI, smooth_params=smooth_params,region_key=key,down_factor=DOWNFACTOR)
+    
+            gt =  seg_tool.gt 
 
-            # #build model
-            seg_tool.widget_build(arch = arch)
-            # train & eval
-            seg_tool.widget_train_eval(epochs=15, batch_size=16, lr=1e-4,
-                                        patch_h=1536, patch_w=1536, patch_d=1,tv_denoise_weight=10000)
+            # build & train & eval
+            seg_tool.widget_train_eval(arch = arch,model_dir=model_dir,epochs=15, batch_size=16, lr=1e-4,
+                                        patch_h=1536, patch_w=1536, patch_d=32,tv_denoise_weight=10)
 
 
             tif.imwrite(f"{SAVE_PARENT}/{key}_gt.tif", (gt.astype(np.uint8)))
@@ -165,7 +161,7 @@ def _max_label_value(rows: Dict[str, Dict[str, np.ndarray]]) -> int:
 
 
 def build_figure(
-    output_path: Path = Path("results/tinyvit_distillresult_e10.png"),
+    output_path: Path ,
     arch_keys: Optional[Sequence[str]] = None,
     row_keys: Optional[Sequence[str]] = None,
 ) -> Path:
@@ -267,14 +263,22 @@ def build_figure(
     return output_path
 
 if __name__ == "__main__":
-    arch_keys = ['dpt','inception_v3']
-    keys = None
+    # arch_keys = ['cmpsd','inception_v3']
+    arch_keys = ['cmpsd_old',]
+    ckpt_list = [
+        # None,
+        # '/home/confetti/e5_workspace/hive1_pipeline/runs/contrastive/onestage_batch2028_nview2_infolossFalse_t1779_2um/model_epoch_100.pth',
+        # '/home/confetti/e5_workspace/hive1/models/facebook/dinov3-vits16-pretrain-lvd1689m',
+        # 'runs/distill/tinyvit_aug_True_t1779/student_epoch_100.pth'
+    ]
+
+    keys = ['1_1','1_2','1_3'] 
     
-    generate = False 
-    draw = True
+    generate = True #train and predict
+    draw = True #display result as a matplotlib.figure
 
     if generate: 
-        gennerate_pred_pca(arch_list=arch_keys,keys=keys)
+        gennerate_pred_pca(arch_list=arch_keys,model_dir_list=ckpt_list,keys=keys)
     if draw:
-        build_figure(output_path=Path(f"/home/confetti/e5_workspace/hive1_pipeline/results/low_reso_full_dilate.png"),  arch_keys=arch_keys,row_keys=keys)
+        build_figure(output_path=Path(f"/home/confetti/e5_workspace/hive1_pipeline/results/contrastive_two_stage_t1779.png"),  arch_keys=arch_keys,row_keys=keys)
     

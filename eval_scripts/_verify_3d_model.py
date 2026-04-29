@@ -7,7 +7,7 @@ sys.path.insert(0, project_dir)
 import torch
 from lib.arch.ae import modify_key, delete_key
 from config.load_config import load_cfg
-from lib.arch.ae import build_cmpsd_model,build_encoder_model,load_compose_encoder_dict, load_encoder2encoder
+from lib.arch.ae import build_contrastive_model,build_encoder_model,load_compose_encoder_dict, load_encoder2encoder
 from torchsummary import summary
 import tifffile as tif
 from confettii.plot_helper import kmeans_grid_results
@@ -19,7 +19,7 @@ device ='cuda'
 args = load_cfg('../config/t11_3d.yaml')
 # avg_pool is applied after three cnn layer
 print(f"{args.avg_pool_size= }")
-cmpsd_model = build_cmpsd_model(args)
+cmpsd_model = build_contrastive_model(args)
 cmpsd_model.eval().to(device)
 print(cmpsd_model)
 summary(cmpsd_model,(1,*args.input_size))

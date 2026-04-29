@@ -8,6 +8,34 @@ def _uses_imagenet_preproc(model_name: str) -> bool:
     """Return True if the model expects ImageNet-style 3-channel normalized input."""
     return model_name in {'s_tinyvit', 's_tinyvittimm', "DPT", "inception_v3", "inception_v3_single", "inception_v3_preavg_single"}
 
+def to_cdhw(arr: np.ndarray, make_3ch: bool = True) -> np.ndarray:
+    """Convert array to (C,D,H,W)."""
+    a = np.asarray(arr)
+    if a.ndim == 2:                   # (H,W) -> (C=1 or 3, D=1, H, W)
+        if make_3ch:
+            a = np.stack([a, a, a], axis=0)   # (3,H,W)
+        else:
+            a = a[None, ...]                  # (1,H,W)
+        a = a[:, None, ...]                   # (C,1,H,W)
+        return a.astype(np.float32)
+
+    if a.ndim == 3:
+        if a.shape[-1] == 3:           # (H,W,3) -> (3,1,H,W)
+            a = np.transpose(a, (2, 0, 1))
+            a = a[:, None, ...]
+            return a.astype(np.float32)
+        else:                          # (D,H,W) -> (C=1 or 3, D,H,W)
+            if make_3ch:
+                a = np.stack([a, a, a], axis=0)
+            else:
+                a = a[None, ...]
+            return a.astype(np.float32)
+
+    if a.ndim == 4:                    # assume already (C,D,H,W)
+        return a.astype(np.float32)
+
+    raise ValueError(f"Unsupported image shape {a.shape}.")
+
 
 def _ensure_tensor_chw_or_cdhw(img: np.ndarray, dims: int,model_name:str) -> torch.Tensor:
     """Convert numpy image to torch tensor with shape (B=1, C=1, H, W) or (B=1, C=1, D, H, W).
@@ -165,8 +193,9 @@ def preprocess_uint16_for_imagenet(
         #  (A) standardize with grayscale stats (mean=0.5,std=0.5) OR
         #  (B) convert first conv to one channel (see helper below)
         # Here we keep simple grayscale z-norm:
-        gray_mean, gray_std = 0.5, 0.5
-        t = (t - gray_mean) / gray_std
+        # gray_mean, gray_std = 0.5, 0.5
+        # t = (t - gray_mean) / gray_std
+        t = t
     else:
         raise ValueError(f"Unexpected channel count: {t.shape[0]}")
 

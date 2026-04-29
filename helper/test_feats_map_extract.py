@@ -7,7 +7,7 @@ sys.path.insert(0, project_dir)
 
 os.environ["NAPARI_ASYNC"] = "1"
 
-from lib.arch.ae import build_cmpsd_model,load_compose_encoder_dict,build_encoder_model,load_encoder2encoder
+from lib.arch.ae import build_contrastive_model,load_compose_encoder_dict,build_encoder_model,load_encoder2encoder
 from config.load_config import load_cfg
 import numpy as np
 import torchvision.models as models
@@ -20,7 +20,7 @@ device ='cuda'
 args = load_cfg('config/t11_3d.yaml')
 args.avg_pool_size = (8,8,8) 
 
-cmpsd_model = build_cmpsd_model(args)
+cmpsd_model = build_contrastive_model(args)
 cmpsd_model.eval().to(device)
 cnn_ckpt_pth = '/home/confetti/data/weights/t11_3d_ae_best2.pth'
 mlp_ckpt_pth ='/home/confetti/data/weights/t11_3d_mlp_best_new_format.pth'

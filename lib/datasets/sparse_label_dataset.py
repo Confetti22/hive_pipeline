@@ -83,7 +83,11 @@ class SparseLabelSegDataset(Dataset):
         else:
             (z0, y0, x0), (z1, y1, x1) = lo, hi
             img = self.image[z0:z1, y0:y1, x0:x1]
-            lab = self.labels[z0:z1, y0:y1, x0:x1]
+            if len(self.labels.shape) ==3:
+                lab = self.labels[z0:z1, y0:y1, x0:x1]
+            else:
+                lab = self.labels[ y0:y1, x0:x1]
+
             if self.imagenet_preproc:
                 if len(img.shape) ==3:
                     x = preprocess_uint16_for_imagenet(img) # [C,D,H,W]

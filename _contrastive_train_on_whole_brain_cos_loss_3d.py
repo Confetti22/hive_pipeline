@@ -8,7 +8,7 @@ from torch.utils.tensorboard import SummaryWriter
 import torch
 from helper.contrastive_train_helper import cos_loss_topk,valid_from_roi,get_t11_eval_data, MLP,Contrastive_dataset_3d
 from config.load_config import load_cfg
-from lib.arch.ae import build_cmpsd_model,load_compose_encoder_dict
+from lib.arch.ae import build_contrastive_model,load_compose_encoder_dict
 import time
 import os
 import shutil
@@ -98,14 +98,14 @@ if args.re_use:
 #%%
 eval_data = get_t11_eval_data(E5=E5)
 
-cmpsd_model = build_cmpsd_model(args)
+cmpsd_model = build_contrastive_model(args)
 cmpsd_model.eval().to(device)
 
 
 cnn_ckpt_pth = f'{data_prefix}/weights/rm009_3d_ae_best.pth'
 
 load_compose_encoder_dict(cmpsd_model,cnn_ckpt_pth,mlp_weight_dict=model.state_dict(),dims=args.dims)
-valid_from_roi(cmpsd_model,0,eval_data,writer)
+# valid_from_roi(cmpsd_model,0,eval_data,writer)
 
 for epoch in range(start_epoch,num_epochs): 
     for batch_idx, batch in enumerate(dataloader):
@@ -132,8 +132,8 @@ for epoch in range(start_epoch,num_epochs):
 
     if (epoch) % valid_very_epoch ==0: 
         model.eval()
-        load_compose_encoder_dict(cmpsd_model,cnn_ckpt_pth,mlp_weight_dict=model.state_dict(),dims=args.dims)
-        valid_from_roi(cmpsd_model,epoch,eval_data,writer)
+        # load_compose_encoder_dict(cmpsd_model,cnn_ckpt_pth,mlp_weight_dict=model.state_dict(),dims=args.dims)
+        # valid_from_roi(cmpsd_model,epoch,eval_data,writer)
         model.train()
 
     if (epoch+1) % shuffle_very_epoch ==0:

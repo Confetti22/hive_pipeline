@@ -1,0 +1,66 @@
+# model:
+#______for cnn_encoder_______
+input_size: [32,32,32]
+dims : 3
+block_type:      # block_type can be  'double' 'triple' or empty(will use one conv each layer)
+filters: [32,48,64]  # filters number can not be the same consecutively
+kernel_size: [5,3,3]
+in_channel: 1
+out_channel: 1 
+pad_mode: 'reflect'
+padding: True #whether to appling padding in each conv
+act_mode: 'elu'
+norm_mode: 'none'
+#_______for mlp_encoder_____
+mlp_filters: [64,48,24]
+
+#____for region_feature_extract___, is applied after cnn_encoder
+avg_pool_size: [4,4,4] 
+avg_pool_padding: False
+
+downsample_strategy : 'conv_stride'
+
+
+# dataset:
+e5: True 
+num_workers: 4
+shuffle: true
+data_path_dir: "/home/confetti/mnt/data/VISoR_Reconstruction/SIAT_SIAT/BiGuoqiang/Mouse_Brain/20210131_ZSS_USTC_THY1-YFP_1779_1/Reconstruction_1.0/z00000_c1.ims.part"
+e5_data_path_dir: "/share/data/VISoR_Reconstruction/SIAT_SIAT/BiGuoqiang/Mouse_Brain/20210131_ZSS_USTC_THY1-YFP_1779_1/Reconstruction_1.0/z00000_c1.ims.part"
+img_channel: 2  
+img_level: 2     #t1779.ims resolution level: 1um, 2um, 4um,...
+valid_data_path_dir: "/home/confetti/data/t1779/32_1536_1536_scenes_v2/roi_2u"
+valid_msk_dir: "/home/confetti/data/t1779/32_1536_1536_scenes_v2/gt_2u"
+e5_valid_data_path_dir: "/share/home/shiqiz/data/t1779/32_1536_1536_scenes_v2/roi_2u"
+e5_valid_msk_dir: "/share/home/shiqiz/data/t1779/32_1536_1536_scenes_v2/gt_2u"
+
+
+loss_name : 'cos_loss'
+#'cos_loss can perfrom both loss or infonce loss'
+
+
+#contrastive dataset
+num_epochs : 150 
+batch_per_gpu: 2028 
+num_pairs : 131072 
+# num_pairs : 256 
+start_epoch : 0 
+valid_very_epoch : 10 
+
+n_views : 2
+# raw_img: 4um  feats_map: 16stride --> 64 um resol in feats_map
+d_near : 16 
+
+#infonce_loss
+infonce: False #Infonce_loss or cos_loss
+temperature: 0.07 #temperatrue for infonce loss
+
+#cos_loss
+topk: False
+only_pos: False
+pos_weight_ratio : 2
+
+#optimizer
+lr: 0.001
+wd: 0.005
+

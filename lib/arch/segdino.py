@@ -191,6 +191,11 @@ class DPT(nn.Module):
         self.feature_map = None
         self.feat_up_method = feat_up_method
         self.smooth_params = smooth_params
+        
+        if self.feat_up_method == "bilateral":
+            print(f" upsample feature map using bilateral upsample with kernel_size={self.smooth_params[0]}, spatial_sigma={self.smooth_params[1]}, range_sigma={self.smooth_params[2]}")
+        else:
+            print(f"training{self.training} upsample feature map using bilinear upsample")
 
         default_layers = self.intermediate_layer_idx.get(self.encoder_size, self.intermediate_layer_idx['base'])
         self.seg_head_layers = list(seg_head_layers) if seg_head_layers is not None else default_layers
@@ -230,7 +235,7 @@ class DPT(nn.Module):
         )
         #extract the feature for visualization in eval mode
         if not self.training:
-            self.feature_map = self.compute_feature_map_pca(features, patch_h, patch_w)
+            self.feature_map = self.compute_feature_map(features, patch_h, patch_w)
 
         out = self.head(features, patch_h, patch_w)
          
@@ -243,7 +248,6 @@ class DPT(nn.Module):
         upsample feature map both for inference and feature_map computation
         """
         if self.feat_up_method == "bilateral" and (not self.training):
-            print(f"traing{self.training} upsample feature map using bilateral upsample with kernel_size={self.smooth_params[0]}, spatial_sigma={self.smooth_params[1]}, range_sigma={self.smooth_params[2]}")
             out  = self._bilateral_upsample_feature_map(
                 features,
                 target_hw=(features.shape[-2]*scale_factor, features.shape[-1]*scale_factor),
@@ -253,9 +257,8 @@ class DPT(nn.Module):
                 chunk_size=4,
             )
         else:
-            print(f"training{self.training} upsample feature map using bilinear upsample")
-            blur = GaussianBlur(kernel_size=3, sigma=1)
-            features = blur(features)
+            # blur = GaussianBlur(kernel_size=2, sigma=1)
+            # features = blur(features)
             out = F.interpolate(features, (features.shape[-2]*scale_factor, features.shape[-1]*scale_factor), mode='bilinear', align_corners=True)
         return out
 
@@ -291,7 +294,8 @@ class DPT(nn.Module):
         features: List[torch.Tensor],
         patch_h: int,
         patch_w: int,
-        pcs_per_layer: List[int] = [24,120,120,24],
+        # pcs_per_layer: List[int] = [24,120,120,24],
+        pcs_per_layer: List[int] = [128,128,128,128],
     ) -> np.ndarray:
         """PCA each layer's (M, C) to top-k, concat along channel, reshape, upsample.
 

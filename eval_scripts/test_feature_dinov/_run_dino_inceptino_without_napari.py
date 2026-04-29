@@ -10,7 +10,7 @@ project_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
 sys.path.insert(0, project_dir)
 
 
-from lib.arch.segmodel import build_dpt,build_inception_v3, build_cmpsd,build_tinyvit_dpt, build_tinyvittimm_dpt
+from lib.arch.segmodel import build_dpt,build_inception_v3, build_cnn_seg,build_tinyvit_dpt, build_tinyvittimm_dpt
 from interactive_svc_single_viewer import  SparseLabelSegDataset, Modelsegmodel, eval_full_roi, train_seghead, _uses_imagenet_preproc, pad_to_multiple, pca_fvol_to_rgb_gpu
 from lib.utils.test_scene import load_t1779
 from confettii.plot_helper import three_pca_as_rgb_image 
@@ -216,7 +216,7 @@ for arch in ['s_tinyvit']:
         classes = np.unique(label)   
         n_classes = max(2, int(len(classes) -  1))  #ignore the unlabled part 0  ensure >= 2
         if arch == "cmpsd":
-            state["segmodel"] = build_cmpsd(dims=dims, n_classes=n_classes)
+            state["segmodel"] = build_cnn_seg(dims=dims, n_classes=n_classes)
         elif arch == "inception_v3":
             state["segmodel"] = build_inception_v3(dims=dims, n_classes=n_classes)
         elif arch == "s_tinyvit":

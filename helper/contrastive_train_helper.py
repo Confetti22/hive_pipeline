@@ -263,9 +263,10 @@ def tsne_grid_plot(
     tag: str = "tsne_grid",
     step: int = 0,
     tag_list=None,
+    ncols: int = 4,
 ):
     """
-    Plot one or more t-SNE scatter plots side-by-side and log the composite figure
+    Plot one or more t-SNE scatter plots in a grid and log the composite figure
     to TensorBoard.
 
     Parameters
@@ -284,6 +285,8 @@ def tsne_grid_plot(
         Optional per-plot titles. Length must be == N *or* 1.
         If length==1 and N>1, an index suffix "_i" is appended automatically.
         If None, defaults to [f"{tag}_{i}" for i in range(N)].
+    ncols : int, default=4
+        Number of columns in the plot grid.
     """
     import matplotlib.pyplot as plt  # local import to avoid polluting global namespace
 
@@ -306,15 +309,34 @@ def tsne_grid_plot(
             )
 
     # Create figure/axes
-    fig, axes = plt.subplots(1, num_plots, figsize=(8 * num_plots, 6))
-    if num_plots == 1:
-        axes = [axes]  # make iterable
+    nrows = int(np.ceil(num_plots / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(8 * ncols, 6 * nrows))
+    
+    # Make sure `axes` is always a 1-D iterable
+    axes = np.atleast_1d(axes).ravel()
 
     # Draw each subplot
-    for ax, encoded, labels, title_str in zip(axes, encoded_list, labels_list, per_plot_tags):
-        tsne_plot(encoded, labels, ax, title=title_str)
+    for i in range(len(axes)):
+        ax = axes[i]
+        if i < num_plots:
+            encoded = encoded_list[i]
+            labels = labels_list[i]
+            title_str = per_plot_tags[i]
+            tsne_plot(encoded, labels, ax, title=title_str)
+        else:
+            ax.axis('off')
 
     plt.tight_layout()
+
+    save_parent_dir = Path(writer.log_dir).resolve()
+    save_dir = save_parent_dir/'valid_imgs'
+
+    if save_dir is not None:
+        save_dir.mkdir(parents=True, exist_ok=True)
+        fname = f"{tag}_step{step}.png"
+        fig.savefig(save_dir / fname, dpi=300, bbox_inches='tight')
+        # optional: print or log path
+        print(f"Saved figure to {save_dir / fname}")
 
     # Log the *grid* figure under the supplied 'tag'
     writer.add_figure(tag, fig, global_step=step)
@@ -710,6 +732,58 @@ def valid_from_roi(model, it, eval_data, writer):
     if len(idxes) > 0: 
         plot_ncc_maps(ncc_valid_imgs, ncc_seedpoints_idx_lsts,locations,writer=writer, tag=f"ncc",step=it,ncols=len(idxes))
 
+
+
+def valid_from_roi_dataloader(model, it, eval_loader, writer):
+    """
+    updated: 2026/2/25
+    based on valid_from_roi, handel with dataloader input with rois and labels
+
+    """
+    model.eval()
+
+    pca_img_lst               = []
+    tsne_encoded_feats_lst    = []
+    tsne_label_lst            = []
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+
+    #rois: B*C*D*H*W  = B*1*D*H*W for rm009 boundary seg dataset
+    #masks: B*D*H*W   = B*1*H*W for rm009 boundary seg dataset  
+    for  rois,labels in eval_loader:
+
+        
+        rois = rois.to(device)
+        labels = labels.numpy().squeeze() #B*H*W
+        outs = model(rois).detach().cpu().numpy().squeeze()  #B*C*H*W (D is avgpool to 1)
+
+        if outs.ndim == 4:                                  # (B, C, H, W)
+            feats_map = np.moveaxis(outs, 1, -1)            # → (B, H, W, C)
+        elif outs.ndim == 5:
+            B, C, D, H, W = outs.shape
+            z_mid = D // 2
+            feats_map = np.moveaxis(outs[:, :,z_mid], 1, -1)   # (B, H, W, C)
+        B, H, W, C = feats_map.shape
+        
+        #per item in batch
+        for idx in range(B):
+            feat = feats_map[idx]
+            label = labels[idx]
+            feats_flat = feat.reshape(-1, C)
+            # ---------------------------------------------------------------- visualisations
+            rgb_img = three_pca_as_rgb_image(feats_flat, (H, W))
+            pca_img_lst.append(rgb_img)
+            tsne_encoded_feats_lst.append(feats_flat)
+
+            # ---------------------------------------------------------------- labels (resampled to H×W)
+            zoom_factor = [y / x for y, x in zip((H, W), label.shape)]
+            label_rs    = zoom(label, zoom_factor, order=0)
+            tsne_label_lst.append(label_rs.ravel())
+
+    # ---------- logging ----------
+    tsne_grid_plot(tsne_encoded_feats_lst,tsne_label_lst,writer,tag='tsne',step=it,ncols=3)
+    plot_pca_maps(pca_img_lst,writer=writer,tag='pca',step=it,ncols=3)
 
 
 

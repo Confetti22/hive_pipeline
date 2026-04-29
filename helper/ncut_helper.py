@@ -47,7 +47,9 @@ def segment_and_plot_from_feats(
     rag_weight_sigma=0.01,
     n_segments=100,
     slic_iters=30,
-    ncut_thresh=0.001
+    ncut_thresh=0.001,
+    save_dir='.',
+    tag='ncut',
 ):
     """
     Segment an image using a feature map and visualize intermediate artifacts.
@@ -81,34 +83,34 @@ def segment_and_plot_from_feats(
     feats_map_normalized = _normalize_feature_map(feats_map_rescaled)
 
     # Build superpixels on the normalized feature map if none are supplied.
-    if label is None:
-        label = slic(
-            feats_map_normalized,
-            n_segments=n_segments,
-            compactness=slic_compactness,
-            max_num_iter=slic_iters,
-            start_label=1,
-            channel_axis=-1
-        )
+    # if label is None:
+    #     label = slic(
+    #         feats_map_normalized,
+    #         n_segments=n_segments,
+    #         compactness=slic_compactness,
+    #         max_num_iter=slic_iters,
+    #         start_label=1,
+    #         channel_axis=-1
+    #     )
 
-    # Reuse an externally supplied RAG when provided to avoid recomputation.
-    if rag is None:
-        rag = rag_mean_feature(
-            feats_map_normalized,
-            label,
-            mode='similarity',
-            sigma=rag_weight_sigma
-        )
+    # # Reuse an externally supplied RAG when provided to avoid recomputation.
+    # if rag is None:
+    #     rag = rag_mean_feature(
+    #         feats_map_normalized,
+    #         label,
+    #         mode='similarity',
+    #         sigma=rag_weight_sigma
+    #     )
 
-    ncut_labels = graph.cut_normalized(label, rag, thresh=ncut_thresh)
-    ncut_labels = np.asarray(ncut_labels, dtype=np.uint16)
+    # ncut_labels = graph.cut_normalized(label, rag, thresh=ncut_thresh)
+    # ncut_labels = np.asarray(ncut_labels, dtype=np.uint16)
     rgb_vis = _compute_pca_visualization(feats_map_normalized)
 
     # Quick side-by-side view of the raw image and PCA features.
-    grid_plot_list_imgs(images=[image, rgb_vis], ncols=2, fig_size=6)
+    grid_plot_list_imgs(images=[image, rgb_vis], ncols=2, fig_size=6,save_dir=save_dir,tag=tag,show=False)
 
-    _plot_segmentation_diagnostics(image, rgb_vis, label, rag, ncut_labels)
-    return ncut_labels
+    # _plot_segmentation_diagnostics(image, rgb_vis, label, rag, ncut_labels,save_dir,tag)
+    return None 
 
 
 def _initialize_rag_nodes(rag, num_channels):
@@ -185,7 +187,7 @@ def _compute_pca_visualization(features):
     return _normalize_feature_map(rgb_vis)
 
 
-def _plot_segmentation_diagnostics(image, rgb_vis, label, rag, ncut_labels):
+def _plot_segmentation_diagnostics(image, rgb_vis, label, rag, ncut_labels,save_dir,tag):
     """Render diagnostic plots for the segmentation pipeline."""
     fig, ax = plt.subplots(ncols=4, sharex=True, sharey=True, figsize=(24, 24))
 
@@ -214,4 +216,8 @@ def _plot_segmentation_diagnostics(image, rgb_vis, label, rag, ncut_labels):
         axis.axis('off')
 
     plt.tight_layout()
-    plt.show()
+    out_path = f"{save_dir}/{tag}_feats_ncut.png"
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")  # or .pdf/.svg for vector
+    plt.close(fig)
+
+

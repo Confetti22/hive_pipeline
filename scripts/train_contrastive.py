@@ -25,9 +25,9 @@ from helper.contrastive_train_helper import (
     save_checkpoint,
     log_layer_embeddings,
 )
-from lib.loss.cos_loss import cos_loss_topk
+from lib.loss.cos_loss import ContrastiveLoss
 from lib.datasets.contrastive_dataset import Contrastive_dataset_3d_2d
-from lib.arch.ae import build_cmpsd_model, load_compose_encoder_dict
+from lib.arch.ae import build_contrastive_model, load_compose_encoder_dict
 from lib.core.scheduler import WarmupCosineLR 
 
 # =============================================================================
@@ -172,7 +172,7 @@ def train_one_epoch(
         batch = torch.cat(batch, dim=0).to(device)  # [B*n_views, C]
         optimizer.zero_grad()
         feats = model(batch).squeeze()
-        loss, pos_cos, neg_cos = cos_loss_topk(
+        loss, pos_cos, neg_cos = ContrastiveLoss(
             features=feats,
             n_views=n_views,
             pos_weight_ratio=pos_weight_ratio,

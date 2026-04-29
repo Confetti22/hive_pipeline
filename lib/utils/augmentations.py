@@ -415,7 +415,7 @@ class UnbiasedGammaGPU(nn.Module):
         return x_aug
 
 class GaussianBlurSharpGPU(nn.Module):
-    def __init__(self, sigma_range=(0.125, 1.0), blending_range=(0.5, 1.5), prob=(0.25, 0.25), v=False):
+    def __init__(self, sigma_range=(0.125, 1.0), blending_range=(0.5, 1.5), prob=(0.3, 0.3), v=False):
         super().__init__()
         self.sigma_range = sigma_range
         self.blending_range = blending_range
@@ -467,10 +467,17 @@ class GaussianBlurSharpGPU(nn.Module):
         # Doing per-sample sigma in a batch requires very complex grouped convolutions 
         # (groups = B*C) or a slow loop. 
         
+        was_5d_d1 = False
+        if x.ndim == 5 and x.shape[2] == 1:
+            x = x.squeeze(2)
+            was_5d_d1 = True
+
         # Case 1: Blur
         if torch.rand(1) < self.prob[0]:
             sigma = getattr(self, "sigma_fixed", None) or torch.empty(1).uniform_(*self.sigma_range).item()
             x = self.apply_blur(x, sigma)
+            if self.v:
+                print(f"blur: sigma of blur is {sigma}")
 
         # Case 2: Sharpen/Blend
         if torch.rand(1) < self.prob[1]:
@@ -479,11 +486,16 @@ class GaussianBlurSharpGPU(nn.Module):
             
             smoothed = self.apply_blur(x, sigma)
             x = x + blending * (x - smoothed)
+            if self.v:
+                print(f"sharp: blending is {blending}")
+                
+        if was_5d_d1:
+            x = x.unsqueeze(2)
             
         return x
 
 class RandomAffineGPU(nn.Module):
-    def __init__(self, angle_range_deg=30, translate_range_pix=24, mirror_prob=0.5, p=0.8, interpolation='bilinear', padding='zeros'):
+    def __init__(self, angle_range_deg=30, translate_range_pix=24, mirror_prob=0.5, p=0.8, interpolation='bilinear', padding='zeros',v=False):
         super().__init__()
         self.angle_rad = math.radians(angle_range_deg)
         self.trans_pix = translate_range_pix
@@ -491,6 +503,7 @@ class RandomAffineGPU(nn.Module):
         self.probability = p
         self.mode = interpolation
         self.padding = padding
+        self.v = v
 
     def _get_2d_params(self, N, shape, device):
         # Generate N sets of parameters (one per batch item)
@@ -587,6 +600,8 @@ class RandomAffineGPU(nn.Module):
         # affine_grid handles B automatically
         grid = F.affine_grid(theta, x.size(), align_corners=False)
         x_out = F.grid_sample(x, grid, mode=self.mode, padding_mode=self.padding, align_corners=False)
+        if self.v:
+            print(f"affine transformation matrix_shape{theta.shape} is applied")
         
         return x_out
 
@@ -621,21 +636,25 @@ class CentralCropGPU(nn.Module):
                 end = start + crop_len
             slices.append(slice(start, end))
 
+        if self.v:
+            print(f"central_crop with size {self.size} is applied")
         return x[tuple(slices)]
 
 
 
 class GPUAugmentations(nn.Module):
-    def __init__(self,size: Union[int, Sequence[int]]):
+    def __init__(self,size: Union[int, Sequence[int],None],v=False, affine =True):
         super().__init__()
         # In a real app, you would import the classes we wrote earlier here.
         # For this toy example, we use PyTorch's native random flip/rotate 
         # to simulate the "heavy lifting" we implemented previously.
-        self.gamma = UnbiasedGammaGPU()
-        self.blur = GaussianBlurSharpGPU()
-        self.affine = RandomAffineGPU()
+        self.gamma = UnbiasedGammaGPU(v=v)
+        self.blur = GaussianBlurSharpGPU(v=v)
+    
+        self.affine = RandomAffineGPU(v=v) if affine else None
 
-        self.crop = CentralCropGPU(size) if size != None else None
+        self.crop = CentralCropGPU(size,v=v) if size else None
+
 
     def forward(self, x):
         """
@@ -645,7 +664,8 @@ class GPUAugmentations(nn.Module):
         with torch.no_grad(): # Disable gradients for augmentation to save memory
             x = self.gamma(x)
             x = self.blur(x)
-            x = self.affine(x)
+            if self.affine:
+                x = self.affine(x)
             if self.crop != None:
                 x = self.crop(x)
         return x

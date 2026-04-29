@@ -317,6 +317,76 @@ class ComposedModel(nn.Module):
         return x
 
 
+
+class ContrastiveModel(nn.Module):
+    """
+    based on ComposedModel, added a projection_head
+    """
+    def __init__(self, in_channel,cnn_filters, kernel_size,dims,mlp_filters, 
+                 pad_mode='reflect', padding = True,act_mode='elu', norm_mode='gn', block_type='double',downsample_strategy='conv_stride',avg_pool_size = None, avg_pool_padding=False,):
+        super().__init__()
+        self.cnn_encoder = EncoderND(in_channel, cnn_filters, kernel_size, dims,
+                                 pad_mode,act_mode, norm_mode, block_type)
+        
+        self.avgpool = self._make_avg_pool(avg_pool_size,avg_pool_padding,dims)
+
+        self.mlp_encoder = ConvMLP(mlp_filters,dims)
+        hidden_dim = mlp_filters[-1]
+        self.proj = ConvMLP([hidden_dim,hidden_dim],dims)
+        self.apply_proj = True
+    
+    
+    def _make_avg_pool(self,avg_pool_size,avg_pool_padding,dims):
+        if avg_pool_size:
+            if avg_pool_padding:
+                pad = [int((x - 1)//2) for x in avg_pool_size]
+            else:
+                pad =0
+            return nn.AvgPool3d(kernel_size=avg_pool_size, stride=1,padding=pad) if dims == 3 else nn.AvgPool2d(kernel_size=avg_pool_size, stride=1,padding=pad)
+        else:
+            return nn.Identity()
+
+    def off_proj(self):
+        self.apply_proj = False
+        print(f"projection has been turned off")
+    
+    def reset_proj(self):
+        self.apply_proj = True 
+        print(f"projection has been turned on ")
+
+
+    def forward(self, x):
+        x = self.cnn_encoder(x) # B*C*D*H*W or B*C*H*W --> B*C (adaptive_avgpooling)
+
+        x = self.avgpool(x)
+        
+        x = self.mlp_encoder(x)
+
+        if self.apply_proj:
+            x = self.proj(x)
+        return x
+    
+
+def build_contrastive_model(args) -> ContrastiveModel:
+    kwargs = {
+        'dims':args.dims,
+        'in_channel': args.in_channel,
+        'cnn_filters': args.filters,
+        'kernel_size': args.kernel_size,
+        'mlp_filters':args.mlp_filters,
+        'pad_mode': args.pad_mode,
+        'act_mode': args.act_mode,
+        'norm_mode': args.norm_mode,
+        'block_type': args.block_type,
+        'avg_pool_size':args.avg_pool_size,
+        'avg_pool_padding':args.avg_pool_padding,
+
+    }
+    model = ContrastiveModel(**kwargs)
+    return model
+
+
+
 "ae2, ae3, with more complex layer naming, "
 "ae2_1, ae3_1, layers' name are concise only with donw/up"
 
@@ -374,7 +444,7 @@ def build_encoder_model(args,dims):
     return model
 
 
-def build_final_model(args):
+def build_cmpsd_model(args):
     kwargs = {
         'in_channel': args.in_channel,
         'cnn_filters': args.filters,

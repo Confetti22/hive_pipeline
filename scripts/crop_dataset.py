@@ -9,13 +9,21 @@ from pathlib import Path
 import numpy as np
 import tifffile as tif
 import math
-
+import sys
+import os
+# Get the path to the parent directory of 'test', which is 'project'
+project_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, project_dir)
 # Optional IMS helper
-try:
-    from helper.image_reader import Ims_Image
-except Exception:
-    Ims_Image = None
+from helper.image_reader import Ims_Image
 
+
+"""
+1.7 for 1um mouse brain nissl image
+2.7 for 4 um macaque brain nissl image
+5 for wide_field_nuclei image
+
+"""
 
 # ----------------------------- utils -----------------------------
 def shannon_entropy(img):
@@ -161,7 +169,7 @@ def main():
     test_n  = total - train_n
 
     # -------------------------- .ims branch --------------------------
-    if img_path.suffix.lower() == ".ims":
+    if str(img_path).lower().endswith((".ims", ".ims.part")):
         if Ims_Image is None:
             raise SystemExit("[ERR] .ims input requires helper.image_reader.Ims_Image")
         ims = Ims_Image(str(img_path), channel=channel)

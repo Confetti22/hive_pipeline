@@ -38,7 +38,7 @@ class ConvSegHead(nn.Module):
 class SimpleSegmodel(nn.Module):
     def __init__(self, encoder: nn.Module, seg_head: nn.Module):
         super().__init__()
-        self.cmpsd_encoder = encoder
+        self.encoder = encoder
         self.seg_head = seg_head
         self.feature_map = None  # avoid attribute errors when accessed after eval
 
@@ -49,24 +49,31 @@ class SimpleSegmodel(nn.Module):
         Returns:
             logits tensor shaped like seg_head output
         """
-        features = self.cmpsd_encoder(x)
+        features = self.encoder(x)
 
 
         out = self.seg_head(features)
-        out = F.interpolate(out,tuple(x.shape[2:]),mode='trilinear',align_corners=False)
 
-        # If you only want to cache feature maps during eval:
-        if not self.training and hasattr(self, "compute_feature_map"):
-            # NOTE: adjust this to whatever shape your compute_feature_map expects
-            self.feature_map = self.compute_feature_map(features, x.shape[2:])
+        if len(out.shape) ==5 and out.shape[2] ==1:
+            # if output D is 1, squeeze it and only interpolate at H, W
+            out = out.squeeze(2)
+            features = features.squeeze(2)
+            target_shape = x.shape[3:]
+        else:
+            target_shape = x.shape[2:]
+        out = F.interpolate(out,tuple(target_shape),mode='bilinear',align_corners=False)
+
+        if not self.training:
+            self.feature_map = self.compute_feature_map(features, target_shape)
+    
 
         return out
 
     
     def compute_feature_map(self,features,spatial_shape):
-        up = F.interpolate(features,tuple(spatial_shape),mode='trilinear', align_corners=False)
-        up= up.squeeze(0).cpu().numpy() # [C,D,H,W]
-        up = np.moveaxis(up ,0,-1)  #[D,H,W,C]
+        up = F.interpolate(features,tuple(spatial_shape),mode='bilinear', align_corners=False)
+        up= up.squeeze(0).cpu().numpy() # [C,D,H,W] or [C,H,W]
+        up = np.moveaxis(up ,0,-1)  #[D,H,W,C] or [H,W,C]
         return up
     
     

@@ -7,7 +7,7 @@ project_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_dir)
 #%%
 
-from lib.arch.ae import build_cmpsd_model,load_compose_encoder_dict
+from lib.arch.ae import build_contrastive_model,load_compose_encoder_dict
 from config.load_config import load_cfg
 import time
 from torchsummary import summary
@@ -15,7 +15,7 @@ from torchsummary import summary
 device ='cuda'
 print(f'{os.getcwd()}=')
 args = load_cfg('config/vsi_ae_2d.yaml')
-cmpsd_model = build_cmpsd_model(args)
+cmpsd_model = build_contrastive_model(args)
 cmpsd_model.eval().to(device)
 
 cnn_ckpt_pth = '/home/confetti/data/weights/vsi_2d_ae_best.pth'

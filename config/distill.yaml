@@ -1,8 +1,8 @@
 # Standalone config for distillation training
 
 # Required
-teacher_dir: /home/confetti/e5_workspace/hive1/models/facebook/dinov3-vits16-pretrain-lvd1689m
-# teacher_dir: /share/home/shiqiz/workspace/hive1/models/facebook/dinov3-vits16-pretrain-lvd1689m
+# teacher_dir: /home/confetti/e5_workspace/hive1/models/facebook/dinov3-vits16-pretrain-lvd1689m
+teacher_dir: /share/home/shiqiz/workspace/hive1/models/facebook/dinov3-vits16-pretrain-lvd1689m
 
 # Checkpoint path for loading model weights (only used when teacher_dir points to a .pth file)
 # ckpt_path: '/home/confetti/e5_workspace/hive1_pipeline/runs/finetune_checkpoints/dinov3_epoch_004.pth'
@@ -11,13 +11,13 @@ teacher_dir: /home/confetti/e5_workspace/hive1/models/facebook/dinov3-vits16-pre
 
 #these three paths contains total of ~7e4 items of 512*512 uint16 gray images, about 34G in total
 train_paths: [
-              # '/share/home/shiqiz/data/t1779/z_slices_512_512', #15924 items
+              '/share/home/shiqiz/data/t1779/z_slices_768_768', #15924 items
               # "/share/home/shiqiz/data/wide_filed/vsi_train",   #8323 items
-              # '/share/home/shiqiz/data/rm009/boundary_seg/new_boundary_seg_data/z_slices',  #51649
+              '/share/home/shiqiz/data/rm009/v1_z_slices_768_768',  #51649
 
-              '/home/confetti/data/t1779/z_slices_512_512', #15924 items
+              # '/home/confetti/data/t1779/z_slices_768_768', #15924 items
               # "/home/confetti/data/wide_filed/vsi_train",   #8323 items
-              # '/home/confetti/data/rm009/boundary_seg/new_boundary_seg_data/z_slices',   #25824#
+              # '/home/confetti/data/rm009/v1_z_slices_768_768',   #25824#
 ]
 
 # train_paths: ['/home/confetti/data/rm009/boundary_seg/new_boundary_seg_data/1zmlp_rois']
@@ -26,12 +26,12 @@ train_paths: [
 # Student
 student_type: tinyvit # or tinyvit
 tinyvit_input_type: rgb # or grayscale (only used when student_type: tinyvit)
-tinyvit_implementation: timm # or timm (only used when student_type: tinyvit)
+tinyvit_implementation: local # or timm (only used when student_type: tinyvit)
 
 # Data Preprocessing
-crop_size: null # Optional central crop size (e.g., 224, 256, 512). If null, no cropping is applied.
+crop_size: 512 # Optional central crop size (e.g., 224, 256, 512). If null, no cropping is applied.
 use_mixup:  False # Apply mixup augmentation with coefficients sampled uniformly from [0,1]
-use_aug: True
+use_aug: True #apply datagumentation can decread loss from 0.04 -> 0.02 on t1779 dataset
 
 # TinyViT Model Architecture (only used when student_type: tinyvit)
 tinyvit_depth: 12 # Number of transformer layers (6-24 recommended)
@@ -54,7 +54,7 @@ use_spatial_coords: false
 
 # Optimization
 batch_size: 16
-epochs: 500
+epochs: 100
 lr: 0.0005
 weight_decay: 0.05
 num_workers: 4
@@ -65,5 +65,5 @@ scheduler_warmup_epochs: 5     # Number of warmup epochs (only used with cosine_
 scheduler_min_lr: 1e-6         # Minimum learning rate (used with cosine schedulers)
 
 # Model Saving
-save_every_epoch: 5           # Save student weights every N epochs (0 to disable)
-save_dir: ./runs/_distill_cnn_test10_tinyvittimm_mullayer_nomixup_cosine_proj_t1779 # Directory to save model checkpoints
+save_every_epoch: 10           # Save student weights every N epochs (0 to disable)
+# save_dir: ./runs/_distill_cnn_test10_tinyvittimm_mullayer_nomixup_cosine_proj_t1779 # Directory to save model checkpoints

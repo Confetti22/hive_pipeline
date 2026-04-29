@@ -31,7 +31,7 @@ from helper.contrastive_train_helper import (
     tsne_grid_plot,
     plot_pca_maps,
 )
-from lib.arch.ae import build_cmpsd_model, load_compose_encoder_dict
+from lib.arch.ae import build_contrastive_model, load_compose_encoder_dict
 
 def valid_from_roi(model, it, eval_data, writer):
     """Evaluate a model on a list of ROIs.
@@ -234,7 +234,7 @@ cfg.mlp_filters =[24,16,12]
 cfg.kernel_size =[5,5,3]
 cfg.last_encoder= True
 
-cmpsd_model = build_cmpsd_model(cfg).to(device)
+cmpsd_model = build_contrastive_model(cfg).to(device)
 cmpsd_model.eval()
 cmpsd_model_ckpt_path = '/home/confetti/e5_workspace/hive1/outs/seg_head/training_from_scratch_level3_avg_pool7/model_epoch_1900.pth'
 cmpsd_model_ckpt = torch.load(cmpsd_model_ckpt_path)

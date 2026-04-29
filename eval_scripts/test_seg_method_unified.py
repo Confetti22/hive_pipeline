@@ -35,7 +35,7 @@ from transformers import AutoModel
 # Local imports
 from helper.graph_cut_helper import GraphCutFastBFS
 from lib.arch.ae_old import (
-    build_final_model, load_compose_encoder_dict, 
+    build_contrastive_model, load_compose_encoder_dict, 
     build_encoder_model, load_encoder2encoder
 )
 from config.load_config import load_cfg
@@ -210,7 +210,7 @@ class ModelManager:
         args.avg_pool_size = (8, 8, 8)
         
         # Build and load composite model
-        self.cmpsd_model = build_final_model(args)
+        self.cmpsd_model = build_contrastive_model(args)
         self.cmpsd_model.eval().to(self.device)
         
         # Load trained weights

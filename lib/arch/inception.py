@@ -44,6 +44,8 @@ class InceptionBackbone(nn.Module):
         return feats
 
 
+
+
 class InceptionSegHead(nn.Module):
     """Lightweight multi-scale fusion head similar in spirit to the DPT head."""
 
@@ -117,3 +119,14 @@ class InceptionSegModel(nn.Module):
         if not self.training:
             return self.feature_map
         return None
+
+
+class InceptionLinearSegModel(nn.Module):
+    def __init__(self, backbone, n_classes):
+        super().__init__()
+        self.backbone = backbone
+        self.classifier = nn.Conv2d(backbone.out_channels[-1], n_classes, kernel_size=1)
+    def forward(self, x):
+        feats = self.backbone(x)
+        logits = self.classifier(feats[-1])
+        return F.interpolate(logits, size=x.shape[-2:], mode="bilinear", align_corners=False)

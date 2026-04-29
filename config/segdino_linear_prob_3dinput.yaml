@@ -15,7 +15,7 @@ supervised_loss: True
 
 # trainer:
 save_every: 5 #save frequency
-epochs: 60
+epochs: 50
 valid_very_epoch: 5
 # removed unused: trainer_name, save_very_epoch, fp16, tsne_emb
 
@@ -31,25 +31,25 @@ shuffle: true
 # removed unused: dataset_name, feats_level, feats_avg_kernel
 
 
-data_path_dir : "/home/confetti/data/rm009/boundary_seg/new_boundary_seg_data/1zmlp_rois"
+data_path_dir : "/home/confetti/data/rm009/boundary_seg/new_boundary_seg_data/rois"
 mask_path_dir : "/home/confetti/data/rm009/boundary_seg/new_boundary_seg_data/masks"
-valid_data_path_dir : "/home/confetti/data/rm009/boundary_seg/new_boundary_seg_data/1zmlp_rois_valid"
+valid_data_path_dir : "/home/confetti/data/rm009/boundary_seg/new_boundary_seg_data/rois_valid"
 valid_mask_path_dir : "/home/confetti/data/rm009/boundary_seg/new_boundary_seg_data/masks_valid"
 
-e5_data_path_dir : "/share/home/shiqiz/data/rm009/boundary_seg/new_boundary_seg_data/1zmlp_rois"
+e5_data_path_dir : "/share/home/shiqiz/data/rm009/boundary_seg/new_boundary_seg_data/rois"
 e5_mask_path_dir : "/share/home/shiqiz/data/rm009/boundary_seg/new_boundary_seg_data/masks"
-e5_valid_data_path_dir : "/share/home/shiqiz/data/rm009/boundary_seg/new_boundary_seg_data/1zmlp_rois_valid"
+e5_valid_data_path_dir : "/share/home/shiqiz/data/rm009/boundary_seg/new_boundary_seg_data/rois_valid"
 e5_valid_mask_path_dir : "/share/home/shiqiz/data/rm009/boundary_seg/new_boundary_seg_data/masks_valid"
-make_3ch: True 
+make_3ch: False
 
 #model backbone:
-arch: 'inception_v3'
+arch: 'cmpsd'
 # model head:
 linear_prob: True # when true, use a single-layer MLP head instead of DPT
 # removed unused: recon_target_dir*, bnd_path_dir*
 
 #if None, then do not load any pretrained weights
-model_dir : "/home/confetti/e5_workspace/hive1_pipeline/runs/distill/tinyvit_aug_True_t1779_rm009v1/student_epoch_100.pth" 
+model_dir : "/home/confetti/e5_workspace/hive1_pipeline/runs/contrastive/onestage_batch2048_nview2_infolossFalse_rm009_4um_mlp[64, 48, 24]/model_epoch_100.pth" 
 e5_model_dir: 
 
 #if False, will train the backbone

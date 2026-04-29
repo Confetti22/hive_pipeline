@@ -95,6 +95,104 @@ def get_path_map():
 
     return path_map
 
+
+def get_path_map_z64():
+    """
+    hp, vii are z64 version of get_path_map; visa2 is a different roi at visa
+    """
+    
+    path_map ={}
+
+    #from t1779 dataset
+    path_map['1_1'] = {
+        'roi': "hp_1536_1536_64.tif",
+        'mask': None,
+        'label': 'hp_label.tif',
+        'pca':'hp_pca.tif',
+        'pred':'hp_pred.tif',
+        'pca_incep':'hp_pca_inception_sliding_win.tif',
+        'pred_incep':'hp_predict_inception.tif',
+        'gt':'1_1_gt.tif',
+    }
+    path_map['1_2'] = {
+        'roi': "vii_1536_1536_64.tif",
+        'mask': "7N_mask.tif",
+        'label': '7N_label.tif',
+        'pca':'7N_pca.tif',
+        'pred':'7N_pred.tif',
+        'pca_incep':'7N_pca_inception_sliding_win.tif',
+        'pred_incep':'7N_pred_inception.tif',
+        'gt':'1_2_gt.tif',
+    }
+
+    path_map['1_3'] = {
+        # visa region roi2 
+        'roi': "visa2_1536_1536_64.tif",
+        'mask': 'visa2_mask.tif',
+        'label': 'visa2_sparse_label.tif',
+        'pca':'visa_pca.tif',
+        'pred':'visa_pred.tif',
+        'pca_incep':'visa_pca_inception_sliding_win.tif',
+        'pred_incep':'visa_pred_inceptionv3.tif',
+        'gt':'visa2_gt.tif',
+
+    }
+
+    # from wide field dataset
+    path_map['2_1'] = {
+        'roi': "wf_hp_1536_1536.tif",
+        'mask': None,
+        'label': 'wf_hp_label.tif',
+        'pca':'wf_hp_pca.tif',
+        'pred':'wf_hp_pred.tif',
+        'gt':'2_1_gt.tif',
+    }
+    path_map['2_2'] = {
+        'roi': "wf_viin_1536_1536.tif",
+        'mask': None,
+        'label': 'wf_7n_label.tif',
+        'pca':'wf_7n_pca.tif',
+        'pred':'wf_7n_pred.tif',
+        'gt':'2_2_gt.tif',
+    }
+    path_map['2_3']={
+        'roi': "wf_visa_1536_1536.tif",
+        'mask': 'wf_visa_mask.tif',
+        'label': 'wf_visa_label.tif',
+        'pca':'wf_visa_pca.tif',
+        'pred':'wf_visa_pred.tif',
+        'gt':'2_3_gt.tif',
+    }
+    #from DK dataset
+
+    path_map['3_1'] = {
+        'roi': "dk_hp_roi.tif",
+        'mask': None,
+        'label':'dk_hp_label.tif',
+        'pca':'dk_hp_pca.tif',
+        'pred':'dk_hp_pred.tif',
+        'gt':'3_1_gt.tif',
+    }
+    path_map['3_2'] = {
+        'roi': "dk_vii_roi.tif",
+        'mask': "dk_7N_mask.tif",
+        'label':'dk_7N_label.tif',
+        'pca':'dk_7N_pca.tif',
+        'pred':'dk_7N_pred.tif',
+        'gt':'3_2_gt.tif',
+    }
+    path_map['3_3']={
+        'roi': "dk_vis_roi.tif",
+        'mask': 'dk_vis_mask.tif',
+        'label':'dk_vis_label.tif',
+        'pca':'dk_vis_pca.tif',
+        'pred':'dk_vis_pred.tif',
+        'gt':'3_3_gt.tif',
+    }
+
+
+    return path_map
+
 def load_t1779(region_key: str = "2_3", DOWNSAMPLE = True ):
 
     #parent_dir for 'roi' 'mask' and 'gt' is parent1

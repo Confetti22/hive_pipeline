@@ -3,6 +3,7 @@ import numpy as np
 import shutil
 import torch
 import torch.nn.functional as F
+from torchsummary import summary
 from tqdm.auto import tqdm
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
@@ -13,7 +14,8 @@ import json
 from lib.utils.html_logger import HTMLFigureLogger
 from lib.datasets.simple_segdataset import get_dataset 
 from lib.core.metric import accuracy, compute_per_class_metrics, merge_metric_lists, summarize_seg_metrics, format_metric_stats
-
+from lib.arch.segdino import DPT,LinearTokenSeg,Dinov3HFBackbone
+from transformers import AutoModel, AutoConfig
 
 from typing import Sequence, Union
 Arr   = Union[np.ndarray, torch.Tensor]
@@ -170,8 +172,11 @@ def bnd_seg_valid(img_logger, valid_loader, seg_model,epoch):
 
  
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-cfg_path = os.environ.get('SEGDINO_CFG', 'config/segdino.yaml')
+cfg_path = os.environ.get('SEGDINO_CFG', 'config/segdino_linear_prob.yaml')
 args = load_cfg(cfg_path)
+
+
+args.exp_name = f"{args.arch}_linear_prob{args.linear_prob}_batch{args.batch_per_gpu}"
 
 if args.test_mode:
     use_ratio = 0.1
@@ -192,47 +197,31 @@ img_logger      = HTMLFigureLogger(args.exp_save_dir + '/' + args.exp_name, html
 test_img_logger = HTMLFigureLogger(args.exp_save_dir + '/' + args.exp_name, html_name="seg_valid_result_test.html")
 train_img_logger= HTMLFigureLogger(args.exp_save_dir + '/' + args.exp_name, html_name="train_seg_valid_result.html")
 
-from lib.arch.segdino import DPT,LinearTokenSeg,Dinov3HFBackbone
-from transformers import AutoModel, AutoConfig
 
-model_dir = "/home/confetti/e5_workspace/hive1/models/facebook/dinov3-vits16-pretrain-lvd1689m" if  not args.e5  else '/share/home/shiqiz/workspace/hive1/models/facebook/dinov3-vits16-pretrain-lvd1689m'
-encoder_size = getattr(args, 'encoder_size', 'base')
-use_linear_head = bool(getattr(args, 'use_linear_head', False))
-seg_head_layers = getattr(args, 'seg_head_layers', None)
+arch = args.arch
+model_dir = args.e5_model_dir if args.e5 else args.model_dir
+linear_prob = bool(args.linear_prob)
+print(f"{linear_prob= }")
 
-#defined the model with config and load weights
-hf_backbone = AutoModel.from_pretrained(
-    model_dir, local_files_only=True, output_hidden_states=True, trust_remote_code=True
-).to(device).eval()
+from lib.arch.segmodel import build_model
 
-#only define the model with config
-# config = AutoConfig.from_pretrained(model_dir)
-# hf_backbone = AutoModel.from_config(config).to(device).train()
+seg_model = build_model(arch, linear_prob,dims=2,n_classes=NUM_CLASSES, model_dir=model_dir,lock_backbone=args.lock_backbone)
+seg_model = seg_model.seg_model.to(device)
 
-backbone = Dinov3HFBackbone(hf_backbone)
-if use_linear_head:
-    seg_model = LinearTokenSeg(backbone=backbone, nclass=NUM_CLASSES, encoder_size=encoder_size).to(device)
-else:
-    seg_model = DPT(encoder_size=encoder_size, nclass=NUM_CLASSES, backbone=backbone, seg_head_layers=seg_head_layers).to(device)
-seg_model.train()
 
-#freeze backbone
-seg_model.lock_backbone()
-
-print("\n","frozen model's layer name",[f"{n}" for n, p in seg_model.named_parameters() if not p.requires_grad])
-print("\n","unfrozen model's layer name",[f"{n}" for n, p in seg_model.named_parameters() if  p.requires_grad],"\n")
-    
+# from torchsummary import summary
+# summary(seg_model, (3,512,512))
 print(seg_model)
+
+from lib.distill.teacher import count_model_size
+count_model_size(seg_model)
+print("\n","unfrozen model's layer name",[f"{n}" for n, p in seg_model.named_parameters() if  p.requires_grad],"\n")
 
 
 optimizer = torch.optim.AdamW(
     filter(lambda p: p.requires_grad, seg_model.parameters()),
     lr=args.lr_start, weight_decay=args.weight_decay
 )
-
-# from lib.core.scheduler import WarmupCosineLR
-# scheduler = WarmupCosineLR(optimizer,args.lr_warmup,args.epochs)
-
 
 # %% ---------- data loaders & loggers (unchanged) -----------------------------
 
@@ -263,7 +252,7 @@ train_ds = get_dataset(
     mask_path_dir=train_msk_dir,
     use_ratio=use_ratio,
     normalize=True,
-    make_3ch=True,
+    make_3ch=args.make_3ch,
     shift_labels_to_zero=False
 )
 
@@ -272,7 +261,7 @@ valid_ds = get_dataset(
     mask_path_dir=valid_msk_dir,
     use_ratio=use_ratio,
     normalize=True,
-    make_3ch=True,
+    make_3ch=args.make_3ch,
     shift_labels_to_zero=False
 )
 
@@ -289,10 +278,10 @@ from lib.utils.loss_utils import compute_class_weights_from_dataset
 class_weights = compute_class_weights_from_dataset(train_ds, num_classes=NUM_CLASSES,recon_target_flag = False)
 supervised_loss_fn = ComboLoss(class_weights=class_weights, focal=args.get("use_focal", True))
 
+from lib.utils.augmentations import GPUAugmentations
 
-# %% ---------- training loop --------------------------------------------------
-from pprint import pprint
-from lib.arch.ae import modify_key,delete_key
+#only perform illumination and blur augmentation
+# augmentor = GPUAugmentations(size = None,affine=False,v=False).to(device)
 
 start_epoch = 0 
 
@@ -303,6 +292,9 @@ for epoch in tqdm(range(start_epoch,args.epochs)):
     total_top1 = []
     for  batch_idx,batch in enumerate(train_loader):
         inputs, targets = batch
+        
+        # inputs = augmentor(inputs)
+
         inputs, targets= inputs.to(device), targets.to(device)
         if inputs.shape[2] ==1:
             inputs = inputs.squeeze(2)

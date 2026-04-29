@@ -37,7 +37,9 @@ class Ims_Image():
 
 
     def from_roi(self, coords, level=0):
-        # coords: [z_offset,y_offset,x_offset,z_size,y_size,x_size]
+        """
+        coords: [z_offset,y_offset,x_offset,z_size,y_size,x_size]
+        """
         # wanted coords
         z_min, z_max = coords[0], coords[3]+coords[0]
         y_min, y_max = coords[1], coords[4]+coords[1]

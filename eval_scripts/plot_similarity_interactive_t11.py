@@ -4,7 +4,7 @@ import os
 # Get the path to the parent directory of 'test', which is 'project'
 project_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_dir)
-from lib.arch.ae import build_cmpsd_model,load_compose_encoder_dict,build_encoder_model,load_encoder2encoder
+from lib.arch.ae import build_contrastive_model,load_compose_encoder_dict,build_encoder_model,load_encoder2encoder
 from config.load_config import load_cfg
 from torchsummary import summary
 from confettii.plot_helper import grid_plot_list_imgs
@@ -27,7 +27,7 @@ args.avg_pool_size = [8,8,8]
 args.avg_pool_padding =  False
 
 # the old result on rm009 did not load the correct encoder feats
-cmpsd_model = build_cmpsd_model(args)
+cmpsd_model = build_contrastive_model(args)
 cmpsd_model.eval().to(device)
 
 #old ckpt

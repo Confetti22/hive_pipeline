@@ -22,14 +22,31 @@ Improvements Summary:
 4.Feature Mapping: Normalized the feature accumulation to match the probability accumulation logic, ensuring that high-overlap areas don't have "brighter" features.
 5.Readability: The eval_full_roi function is now half the length and clearly outlines the steps: Setup -> Loop -> Accumulate -> Normalize.
 """
-def get_blend_weight(shape: Tuple[int, ...]) -> np.ndarray:
-    """Generates N-dimensional cosine-like blending weights."""
+def get_blend_weight(shape: Tuple[int, ...],cosine_decay=False) -> np.ndarray:
+    """Generates N-dimensional  blending weights."""
     coords = [np.linspace(-1, 1, s) for s in shape]
     grid = np.meshgrid(*coords, indexing='ij')
     dist = np.sqrt(sum(g**2 for g in grid))
     if dist.max() > 0:
         dist /= dist.max()
-    return np.clip(1.0 - dist, 0.0, 1.0).astype(np.float32)
+    if cosine_decay:
+        weight = 0.5 * (1.0 + np.cos(dist * np.pi)) 
+        return np.where(dist <= 1.0, weight, 0.0).astype(np.float32)
+    else:
+        return np.clip(1.0 - dist, 0.0, 1.0).astype(np.float32)
+
+# To make it truly cosine-like (a radial Hann window):
+import numpy as np
+
+def get_blend_weight_cosine(shape: tuple[int, ...]) -> np.ndarray:
+    coords = [np.linspace(-1, 1, s) for s in shape]
+    grid = np.meshgrid(*coords, indexing='ij')
+    dist = np.sqrt(sum(g**2 for g in grid))
+    if dist.max() > 0:
+        dist /= dist.max()
+    
+    # Cosine transformation: goes smoothly from 1.0 at center to 0.0 at dist=1.0
+    
 
 def pad_tile(tile_img: np.ndarray, target_shape: Tuple[int, ...]) -> np.ndarray:
     """Pads tile to target_shape using reflect or edge mode."""
@@ -92,7 +109,7 @@ def run_inference_on_tile(segmodel, tile_img, device, tv_weight):
 
 def eval_full_roi(
     segmodel: Modelsegmodel,
-    image: np.ndarray,
+    image: np.ndarray, #TODO: for large image, it will be given as a path to a .ims or .h5 file
     device: str = "cuda",
     tile: Optional[Tuple[int, ...]] = None,
     capture_features: bool = True,
@@ -113,6 +130,7 @@ def eval_full_roi(
             feat = segmodel.seg_model.get_feature_map() if capture_features else None
             return np.argmax(probs, axis=0) + 1, feat
 
+    #TODO: using zarr stored on disk for prob_acc and weight_acc for large volumes
     # 2. Setup Accumulators
     prob_acc = np.zeros((segmodel.n_classes, *img_shape), dtype=np.float32)
     weight_acc = np.zeros(img_shape, dtype=np.float32)

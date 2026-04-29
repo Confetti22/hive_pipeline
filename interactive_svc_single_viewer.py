@@ -42,7 +42,7 @@ import napari
 from time import time
 from magicgui import magicgui
  
-from lib.arch.segmodel import build_cmpsd, build_dpt, build_and_load_weights_dpt,build_inception_v3, build_seg_head
+from lib.arch.segmodel import build_model,build_tinyvit_dpt,build_tinyvittimm_dpt,build_cnn_seg, build_dpt, build_and_load_weights_dpt,build_inception_v3, build_seg_head
 from lib.utils.preprocess_img import  pad_to_multiple
 from helper.napari_view_utilis import find_valid_rectangle_bbox_from_shapes 
 from lib.datasets.sparse_label_dataset import SparseLabelSegDataset
@@ -53,7 +53,6 @@ from confettii.plot_helper import three_pca_as_rgb_image
 # ----------------------------------
 # Project bootstrap (repo root import)
 # ----------------------------------
-DOWN_FACTOR= 1 
 NAPARI = True
 PRECOMPUTE_FEAT = False 
 
@@ -71,7 +70,7 @@ from lib.trainers.train_seghead import train_seghead
 from lib.inferencers.tilled_inference2d3d import eval_full_roi   
 
 class NapariSegTool:
-    def __init__(self, viewer: napari.Viewer|None, dims: int = 3, napari: bool = True,smooth_params=(16,4,1)):
+    def __init__(self, viewer: napari.Viewer|None, dims: int = 3, napari: bool = True,smooth_params=(16,4,1),region_key='3_3',down_factor=0):
         self.viewer = viewer
         self.dims = dims
         self.napari = napari
@@ -89,23 +88,27 @@ class NapariSegTool:
         self.final_roi = None
         self.patch_h =0
         self.patch_w = 0
+        self.region_key = region_key
+        self.downsample = down_factor
         # UI Config
 
         self._initialize_data()
         if self.napari:
             self._setup_layers()
-        self._init_widgets()
+            self._init_widgets()
 
 
     def _initialize_data(self):
         """Load initial datasets."""
-        roi, label, mask = load_t1779_1(region_key='3_3', three_d = (self.dims==3),down_factor=DOWN_FACTOR)
+        roi, label, mask, gt = load_t1779_1(region_key=self.region_key, three_d = (self.dims==3),down_factor=self.downsample)
         
         roi_shape = roi.shape[:self.dims]
         
         self.roi = roi
         self.label = label if label is not None else np.zeros(roi_shape, dtype=np.uint8)
         self.mask = mask if mask is not None else np.ones(roi_shape, dtype=bool)
+        self.gt= gt if gt is not None else np.ones(roi_shape, dtype=bool)
+
         print(f"{self.roi.shape=}, {self.label.shape=}, {self.mask.shape=}")
 
     def _setup_layers(self):
@@ -123,7 +126,7 @@ class NapariSegTool:
         if self.segmodel is None:
             print("Error: Build model first.")
             return
-        imagenet_preproc = self.segmodel.name in ["DPT", "inception_v3"] # Simplified check
+        imagenet_preproc = self.segmodel.name in ["DPT", "inception_v3",'dpt','s_tinyvit','s_tinyvittimm','inception_v3'] # Simplified check
 
 
         if PRECOMPUTE_FEAT:
@@ -176,6 +179,8 @@ class NapariSegTool:
         padded_roi = pad_to_multiple(working_roi, 16, dims=self.dims)
         self.final_roi = padded_roi
         
+        self.pred, self.feat = None,None
+
         pred, feat = eval_full_roi(
             self.segmodel, padded_roi, device, 
             tile=tile_size, capture_features=capture_features, 
@@ -287,23 +292,18 @@ class NapariSegTool:
         return None
 
 
-    def widget_build(self, arch: str = "DPT"):
+    def widget_build(self, arch: str = "DPT", model_dir= None):
         classes = np.unique(self.label)
         n_classes = max(2, int(len(classes) - 1))
+        self.segmodel = build_model(arch,linear_prob=True,dims=self.dims,n_classes=n_classes,model_dir=model_dir)
         
-        if arch == "cmpsd":
-            self.segmodel = build_cmpsd(dims=self.dims, n_classes=n_classes)
-        elif arch == "inception_v3":
-            self.segmodel = build_inception_v3(dims=self.dims, n_classes=n_classes)
-        elif arch == "DPT":
-            if PRECOMPUTE_FEAT:
-                self.segmodel = build_seg_head(dims=self.dims, n_classes=n_classes,patch_h=self.patch_h,patch_w=self.patch_w)
-            else:
-                self.segmodel = build_dpt(dims=self.dims, n_classes=n_classes, smooth_params=self.smooth_params)
+
+        # elif arch == "DPT":
+        #     if PRECOMPUTE_FEAT:
+        #         self.segmodel = build_seg_head(dims=self.dims, n_classes=n_classes,patch_h=self.patch_h,patch_w=self.patch_w)
+        #     else:
+        #         self.segmodel = build_dpt(dims=self.dims, n_classes=n_classes, smooth_params=self.smooth_params)
                 
-        else:
-            print(f"Error: Unknown architecture '{arch}'.")
-            return
 
         print(f"Built {arch} with {n_classes} classes.")
 
@@ -321,8 +321,9 @@ class NapariSegTool:
     )
     def widget_train_eval(self,
         arch: str = "DPT",
+        model_dir = None,
         epochs=6, batch_size=16, lr=1e-4, 
-        patch_h=1536, patch_w=1536, patch_d=1,
+        patch_h=768, patch_w=768, patch_d=32,
         # tile_h=1536, tile_w=1536, tile_d=1,
         tv_denoise_weight=0.1 , capture_features=True
 
@@ -331,7 +332,7 @@ class NapariSegTool:
         start = time()
         self.patch_h = int(min(int(patch_h),self.roi.shape[0])//16)
         self.patch_w = int(min(int(patch_w),self.roi.shape[1])//16)
-        self.widget_build(arch=arch)
+        self.widget_build(arch=arch,model_dir=model_dir)
         current1 = time()
         print(f"{arch} has been build ,{current1 - start:.2f}s elapsed")
 
@@ -394,7 +395,7 @@ def add_ui(viewer: napari.Viewer,dims,napari=True) -> NapariSegTool:
 
 def main() -> None:
     os.environ.setdefault("NAPARI_ASYNC", "1")
-    dims = 2
+    dims = 3
     viewer = napari.Viewer(ndisplay=dims)
 
     # Key binding: toggle predicted segout-like layers

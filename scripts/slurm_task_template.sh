@@ -9,10 +9,10 @@ sbatch --job-name="$SCRIPT_NAME" <<EOF
 #SBATCH --error=${SCRIPT_NAME}_%j.err
 #SBATCH --time=96:00:00
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=12
+#SBATCH --cpus-per-task=14
 #SBATCH --mem=48G
-#SBATCH --partition=compute
-#SBATCH --nodelist=c001
+#SBATCH --partition=tao
+#SBATCH --nodelist=t002
 #SBATCH --gres=gpu:1
 
 # Load conda environment properly

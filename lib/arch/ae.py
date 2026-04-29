@@ -141,9 +141,10 @@ class EncoderND(nn.Module):
     Everything (including the former conv_in and optional last 1×1 conv) is a down_layer.
     """
     def __init__(self, in_channel, filters, kernel_size, dims=3,
-                 pad_mode='reflect', act_mode='elu', norm_mode='gn',
+                 pad_mode='reflect', padding = False,act_mode='elu', norm_mode='gn',
                  block_type='double',
-                 downsample_strategy='conv_stride'):  # 'conv_stride' or 'max_pool'
+                 downsample_strategy='conv_stride',
+                 ):  # 'conv_stride' or 'max_pool'
         super().__init__()
         assert downsample_strategy in ('conv_stride', 'max_pool'), \
             "downsample_strategy must be 'conv_stride' or 'max_pool'"
@@ -165,13 +166,14 @@ class EncoderND(nn.Module):
 
         # ---- Stage 0: former conv_in, now a down_layer (single block, no padding) ----
         k0 = kernel_size[0]
+        p0 = int((k0-1)//2) if padding else 0
 
         if self.downsample_strategy == 'conv_stride':
-            stage0 = make_block(in_channel, filters[0], k0, stride=2,
+            stage0 = make_block(in_channel, filters[0], k0, stride=2,padding=p0,
                                 block_type=block_type, dim=dims, trans=False,
                                 shared_kwargs=self.shared_kwargs)
         else:
-            stage0_block = make_block(in_channel, filters[0], k0, stride=1,
+            stage0_block = make_block(in_channel, filters[0], k0, stride=1,padding=p0,
                                       block_type=block_type, dim=dims, trans=False,
                                       shared_kwargs=self.shared_kwargs)
             stage0 = nn.Sequential(stage0_block, Pool(kernel_size=2, stride=2))
@@ -181,14 +183,16 @@ class EncoderND(nn.Module):
         # ---- Stages 1..depth-1 ----
         for i in range(self.depth - 1):
             ks = kernel_size[min(i + 1, len(kernel_size) - 1)]
+            p = int((ks - 1) // 2) if padding else 0
+
 
             if self.downsample_strategy == 'conv_stride':
-                block = make_block(filters[i], filters[i + 1], ks, stride=2,
+                block = make_block(filters[i], filters[i + 1], ks, stride=2,padding=p,
                                    block_type=block_type, dim=dims, trans=False,
                                    shared_kwargs=self.shared_kwargs)
                 stage = block
             else:
-                block = make_block(filters[i], filters[i + 1], ks, stride=1,
+                block = make_block(filters[i], filters[i + 1], ks, stride=1,padding=p,
                                    block_type=block_type, dim=dims, trans=False,
                                    shared_kwargs=self.shared_kwargs)
                 if i == self.depth - 1 -1:
@@ -354,6 +358,56 @@ class ComposedModel(nn.Module):
         x = self.mlp_encoder(x)
         return x
 
+
+class ContrastiveModel(nn.Module):
+    """
+    based on ComposedModel, added a projection_head
+    """
+    def __init__(self, in_channel,cnn_filters, kernel_size,dims,mlp_filters, 
+                 pad_mode='reflect', padding = True,act_mode='elu', norm_mode='gn', block_type='double',downsample_strategy='conv_stride',avg_pool_size = None, avg_pool_padding=False,):
+        super().__init__()
+        self.cnn_encoder = EncoderND(in_channel, cnn_filters, kernel_size, dims,
+                                 pad_mode,padding, act_mode, norm_mode, block_type,downsample_strategy=downsample_strategy)
+        
+        self.avgpool = self._make_avg_pool(avg_pool_size,avg_pool_padding,dims)
+
+        self.mlp_encoder = ConvMLP(mlp_filters,dims)
+        hidden_dim = mlp_filters[-1]
+        self.proj = ConvMLP([hidden_dim,hidden_dim],dims)
+        self.apply_proj = True
+    
+    
+    def _make_avg_pool(self,avg_pool_size,avg_pool_padding,dims):
+        if avg_pool_size:
+            if avg_pool_padding:
+                pad = [int((x - 1)//2) for x in avg_pool_size]
+            else:
+                pad =0
+            return nn.AvgPool3d(kernel_size=avg_pool_size, stride=1,padding=pad) if dims == 3 else nn.AvgPool2d(kernel_size=avg_pool_size, stride=1,padding=pad)
+        else:
+            return nn.Identity()
+
+    def off_proj(self):
+        self.apply_proj = False
+        print(f"projection has been turned off")
+    
+    def reset_proj(self):
+        self.apply_proj = True 
+        print(f"projection has been turned on ")
+
+
+    def forward(self, x):
+        x = self.cnn_encoder(x) # B*C*D*H*W or B*C*H*W --> B*C (adaptive_avgpooling)
+
+        x = self.avgpool(x)
+        
+        x = self.mlp_encoder(x)
+
+        if self.apply_proj:
+            x = self.proj(x)
+        return x
+
+
 MODEL_MAP = {
     'ae': BaseAutoEncoderND,
     'encoder': EncoderND,
@@ -412,23 +466,42 @@ def build_encoder_model(args, dims):
 
 
 
-def build_cmpsd_model(args):
+def build_cmpsd_model(args) -> ComposedModel: 
     kwargs = {
+        'dims':args.dims,
         'in_channel': args.in_channel,
         'cnn_filters': args.filters,
         'kernel_size': args.kernel_size,
+        'mlp_filters':args.mlp_filters,
         'pad_mode': args.pad_mode,
         'act_mode': args.act_mode,
         'norm_mode': args.norm_mode,
         'block_type': args.block_type,
-        'dims':args.dims,
-        'mlp_filters':args.mlp_filters,
         'downsample_strategy':args.downsample_strategy,
 
     }
     model = ComposedModel(**kwargs)
     return model
 
+def build_contrastive_model(args) -> ContrastiveModel:
+    kwargs = {
+        'dims':args.dims,
+        'in_channel': args.in_channel,
+        'cnn_filters': args.filters,
+        'kernel_size': args.kernel_size,
+        'mlp_filters':args.mlp_filters,
+        'pad_mode': args.pad_mode,
+        'padding': args.padding,
+        'act_mode': args.act_mode,
+        'norm_mode': args.norm_mode,
+        'block_type': args.block_type,
+        'downsample_strategy':args.downsample_strategy,
+        'avg_pool_size':args.avg_pool_size,
+        'avg_pool_padding':args.avg_pool_padding,
+
+    }
+    model = ContrastiveModel(**kwargs)
+    return model
 
 class semantic_seg(nn.Module):
     def __init__(self, in_channel,out_channel,filters, kernel_size,dims,mlp_filters, 

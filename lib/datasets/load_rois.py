@@ -169,7 +169,9 @@ def load_t1779_1(region_key: str = "2_3",three_d=False,down_factor= 0):
     # relabelled_mask,mappings = relabel_sequential(eroded_mask)
 
     print(f"{region_key= }")
-    path_map = get_path_map()
+    from lib.utils.test_scene import get_path_map_z64
+    # path_map = get_path_map()
+    path_map = get_path_map_z64()
 
     if region_key not in path_map:
         raise ValueError(f"Unknown region_key '{region_key}'. Available: {list(path_map.keys())}")
@@ -178,11 +180,15 @@ def load_t1779_1(region_key: str = "2_3",three_d=False,down_factor= 0):
     roi_path = f"{parent_dir}/{path_map[region_key]['roi']}"
     label_path = f"{parent_dir}/{path_map[region_key]['label']}" if path_map[region_key]['label'] is not None else None
     mask_path = f"{parent_dir}/{path_map[region_key]['mask']}" if path_map[region_key]['mask'] is not None else None
+    gt_path = f"{parent_dir}/{path_map[region_key]['gt']}" if path_map[region_key]['gt'] is not None else None
 
     roi_vol = tif.imread(roi_path)
     roi = np.max(roi_vol,axis=0)  if (len(roi_vol.shape) ==3 and roi_vol.shape[-1] != 3 and not three_d) else roi_vol
     # roi = roi_vol[0]
     roi = np.squeeze(roi)
+
+    gt = tif.imread(gt_path) if gt_path is not None else None
+    gt = np.squeeze(gt) if gt is not None else None
     
     label = tif.imread(label_path) if label_path is not None else  None
     label = np.squeeze(label) if label is not None else None
@@ -190,27 +196,40 @@ def load_t1779_1(region_key: str = "2_3",three_d=False,down_factor= 0):
     mask = np.squeeze(mask) if mask is not None else None   
     if down_factor != 0: 
         zoom_factor = 1 / (2 ** down_factor)
-        roi = zoom(roi, zoom=(zoom_factor,zoom_factor,1), order=1)  # downsample to 0.5x for faster testing
+        if len(roi.shape) ==2:
+            roi_zoom_factor = (zoom_factor,zoom_factor) 
+        elif len(roi.shape) ==3 and roi_vol.shape[-1] == 3:
+            roi_zoom_factor = (zoom_factor,zoom_factor,1) 
+        else:
+            roi_zoom_factor = (zoom_factor,zoom_factor,zoom_factor) 
+
+        roi = zoom(roi, zoom=roi_zoom_factor, order=1)  
         label = zoom(label, zoom=zoom_factor, order=0)  if label is not None else None
         mask = zoom(mask, zoom=zoom_factor, order=0)  if mask is not None else None
+        gt = zoom(gt, zoom=zoom_factor, order=0)  if gt is not None else None
     
     #pad the label and mask to be same shape as 3d roi
-    if three_d:
-        z = roi.shape[0]
-        half_z = int(z/2)
-        lz = half_z
-        rz = half_z if z%2==0 else half_z -1
+    # if three_d:
+    #     z = roi.shape[0]
+    #     half_z = int(z/2)
+    #     lz = half_z
+    #     rz = half_z-1 if z%2==0 else half_z 
 
-        if label is not None:
-            if label.ndim == 2:
-                label = label[None, ...]
-            label = np.pad(label, ((lz, rz), (0, 0), (0, 0)), mode="constant", constant_values=0)
-        if mask is not None:
-            if mask.ndim == 2:
-                mask = mask[None, ...]
-            mask = np.pad(mask, ((lz, rz), (0, 0), (0, 0)), mode="constant", constant_values=1)
+    #     if label is not None:
+    #         if label.ndim == 2:
+    #             label = label[None, ...]
+    #         label = np.pad(label, ((lz, rz), (0, 0), (0, 0)), mode="constant", constant_values=0)
+    #     if mask is not None:
+    #         if mask.ndim == 2:
+    #             mask = mask[None, ...]
+    #         mask = np.pad(mask, ((lz, rz), (0, 0), (0, 0)), mode="constant", constant_values=1)
+        
+    #     if gt is not None:
+    #         if gt.ndim == 2:
+    #             gt = gt[None, ...]
+    #         gt = np.pad(gt, ((lz, rz), (0, 0), (0, 0)), mode="constant", constant_values=1)
 
-    return roi , label,mask
+    return roi , label, mask, gt
 
 def load_3d_rm009():
     "the training dataset is from  z55200-z67800 (1um) ,  transfer to 4um space is from Z13800~Z16950"

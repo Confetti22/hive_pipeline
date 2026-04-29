@@ -9,27 +9,29 @@ python scripts/train_distillation.py -cfg config/distill.yaml
 
 """
 
-import sys
-import os
-# Get the path to the parent directory of 'test', which is 'project'
-project_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-sys.path.insert(0, project_dir)
 import argparse
+import os
+import re
+import sys
+import yaml
+from glob import glob
+from itertools import chain
 from pathlib import Path
 from typing import List
-from torchsummary import summary
-import yaml
+
 import torch
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
+from torchsummary import summary
 
-from lib.distill import (
-    GrayTiffDataset,
-    Distiller,
-)
+# Get the path to the parent directory of 'scripts', which is 'hive1_pipeline'
+project_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, project_dir)
 
+from lib.distill import GrayTiffDataset, Distiller
 from lib.distill.student import build_student_cnn
 from lib.utils.augmentations import GPUAugmentations
+from lib.core.optimizer import get_parameter_groups
 
 def _validate_paths(paths: List[str], max_count: int | None = None) -> List[str]:
     files: List[str] = []
@@ -46,6 +48,46 @@ def _validate_paths(paths: List[str], max_count: int | None = None) -> List[str]
         files = files[:max_count]
         print(f"[DATA] Limiting to first {len(files)} files for this run")
     return files
+
+
+def load_latest_epoch(distiller: Distiller, save_dir: str):
+    """
+    Loads the latest student checkpoint. 
+    Returns 0 if no checkpoints exist, allowing for a fresh training start.
+    """
+    save_path = Path(save_dir)
+    
+    # Ensure the directory exists; if not, there are definitely no files
+    if not save_path.exists():
+        print(f"[INFO] Directory {save_dir} not found. Starting from epoch 0.")
+        return 0
+
+    # Find all student_epoch_XXX.pth files
+    checkpoints = list(save_path.glob("student_epoch_*.pth"))
+    
+    if not checkpoints:
+        print(f"[INFO] No existing checkpoints found in {save_dir}. Starting from epoch 0.")
+        return 0
+
+    try:
+        # Sort by the numeric value in the filename to avoid "10" coming before "2"
+        checkpoints.sort(key=lambda x: int(re.findall(r'\d+', x.name)[-1]))
+        latest_checkpoint = checkpoints[-1]
+        
+        # Load the weights
+        state_dict = torch.load(latest_checkpoint, map_location='cpu', weights_only=True)
+        distiller.student.load_state_dict(state_dict)
+        
+        # Extract epoch number from filename (e.g., '015' -> 15)
+        last_epoch = int(re.findall(r'\d+', latest_checkpoint.name)[-1])
+        
+        print(f"[LOAD] Resumed from {latest_checkpoint.name} (Epoch {last_epoch})")
+        return last_epoch
+
+    except Exception as e:
+        print(f"[WARNING] Error loading checkpoint: {e}. Falling back to epoch 0.")
+        return 0
+
 
 
 def main():
@@ -98,7 +140,7 @@ def main():
     
     # Model saving configuration
     save_every_epoch = int(cfg.get('save_every_epoch', 0))
-    save_dir = cfg.get('save_dir', './checkpoints')
+    save_dir = f"./runs/distill/{cfg['student_type']}_aug_{cfg['use_aug']}_no_norm_wd_rm009v1_t1779"
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
@@ -119,16 +161,13 @@ def main():
 
     ds = GrayTiffDataset(train_paths)
     dl = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
-    augmentor = GPUAugmentations(size=crop_size).to(device)
-
-    # Build student CNN when requested; users should provide a factory in their codebase
-    
+    augmentor = GPUAugmentations(size=crop_size, v=False).to(device)
 
     distiller = Distiller(
         teacher_dir=teacher_dir,
         ckpt_path=ckpt_path,
         student_type=student_type,
-        student_cnn_builder= build_student_cnn(model_type='simple') if student_type == 'cnn' else None,
+        student_cnn_builder=build_student_cnn(model_type='simple') if student_type == 'cnn' else None,
         tinyvit_input_type=tinyvit_input_type,
         tinyvit_implementation=tinyvit_implementation,
         tinyvit_depth=tinyvit_depth,
@@ -145,14 +184,10 @@ def main():
 
     from lib.distill.teacher import count_model_size
     count_model_size(distiller.teacher)
-
     count_model_size(distiller.student)
 
     print(distiller.student)
-    # summary(distiller.student, (3, 256, 256))
-    writer = SummaryWriter(log_dir= save_dir)
-
-    
+    writer = SummaryWriter(log_dir=save_dir)
 
     # Log configuration
     print(f"[CONFIG] Student type: {student_type}")
@@ -181,16 +216,13 @@ def main():
         print(f"[CONFIG] CUDA Device: {torch.cuda.get_device_name()}")
         print(f"[CONFIG] CUDA Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
 
-    from itertools import chain
-
-    adapter_params = chain.from_iterable(
-        adapter.parameters() for adapter in distiller.adapter
-    )
-
+    # Separate parameters into weight decay and no weight decay groups
+    optim_groups = get_parameter_groups(distiller.student, distiller.adapter, wd)
+    print(f"Separate parameters into weight decay and no weight decay groups")
+    
     optim = torch.optim.AdamW(
-        chain(distiller.student.parameters(), adapter_params),
+        optim_groups,
         lr=lr,
-        weight_decay=wd,
     )
 
     scaler = torch.amp.GradScaler('cuda', enabled=False)  # Disabled mixed precision training
@@ -223,10 +255,13 @@ def main():
     distiller.teacher.eval()
     distiller.student.train()
 
-    for ep in range(epochs):
+    st_epoch = load_latest_epoch(distiller, save_dir)
+    end_epoch = epochs
+
+    for ep in range(st_epoch, end_epoch):
         for batch_idx, (x_rgb, image_ids) in enumerate(dl):
             x_rgb = x_rgb.to(device, non_blocking=True)
-            #data augmentation
+            # data augmentation
             if use_aug:
                 x_rgb = augmentor(x_rgb)
 
@@ -235,7 +270,6 @@ def main():
                 lam = torch.rand(x_rgb.size(0), device=device, dtype=x_rgb.dtype).view(-1, 1, 1, 1)
                 perm = torch.randperm(x_rgb.size(0), device=device)
                 x_rgb = lam * x_rgb + (1 - lam) * x_rgb[perm]
-
 
             optim.zero_grad(set_to_none=True)
 

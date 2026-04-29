@@ -33,7 +33,7 @@ os.environ["NAPARI_ASYNC"] = "1"
 
 # [NEW] Model/config imports
 from lib.arch.ae_old import (
-    build_final_model,
+    build_contrastive_model,
     load_compose_encoder_dict,
     build_encoder_model,
     load_encoder2encoder,
@@ -58,7 +58,7 @@ args.mlp_filters = [96, 48, 24, 12]
 # args.mlp_filters = [96, 64, 32, 12]
 
 # [NEW] Composite model (AE + MLP)
-cmpsd_model = build_final_model(args)
+cmpsd_model = build_contrastive_model(args)
 cmpsd_model.eval().to(device)
 cnn_ckpt_pth = '/home/confetti/data/weights/t11_3d_ae_best2.pth'
 mlp_ckpt_pth = '/home/confetti/data/weights/t11_3d_mlp_best_new_format.pth'

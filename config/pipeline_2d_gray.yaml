@@ -1,13 +1,12 @@
-run_id: "exp003_widefield"             # will create runs/exp001/*
+run_id: "temp_crop_roi"             # will create runs/exp001/*
 dims: 2
 paths:
-  input_image: "/home/confetti/e5_data/wide_filed/padded_nuclei_channel"
+  input_image: "/home/confetti/mnt/data/VISoR_Reconstruction/SIAT_SIAT/BiGuoqiang/Mouse_Brain/20210131_ZSS_USTC_THY1-YFP_1779_1/Reconstruction_1.0/z00000_c1.ims.part"
   # input_image: "/home/confetti/e5_data/wide_filed/padded_nuclei_channel"
-  img_channel: 1 #
-  resol: 0.5 # in um
-
+  img_channel: 4 #
+  resol: 1 # in um
   level: 0   # level and channel are used if input is .ims file
-  channel: 1
+  channel: 2
 
   output_root: "runs"
 
@@ -26,11 +25,11 @@ paths:
   mlp_weight_path:  
 
 crop:
-  roi_size: 64  # size of each roi
-  train_split: 0.8  # (0-split )z range will be used in train, and (split,1)z range for test if dims=3, else, along the y axis split the dataset
-  split_axis: 1 # 0=Z, 1=Y, 2=X 
-  entropy_thres: 5  # 2.7 for 4um macaque nissle channel imaging
-  amount: 32768 #will sample amount train rois and 0.2*amount test rois
+  roi_size: 768 # size of each roi
+  train_split: 0.99  # (0-split )z range will be used in train, and (split,1)z range for test if dims=3, else, along the y axis split the dataset
+  split_axis: 0  # 0=Z, 1=Y, 2=X 
+  entropy_thres: 1.7  # 2.7 for 4um macaque nissle channel imaging
+  amount: 65536 #will sample amount train rois and 0.2*amount test rois
   sample_range:  
 
 autoencoder:

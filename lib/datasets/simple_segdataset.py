@@ -11,7 +11,7 @@ import torch
 from torch import Tensor
 from torch.utils.data import Dataset
 
-from lib.utils.preprocess_img import preprocess_uint16_for_imagenet
+from lib.utils.preprocess_img import preprocess_uint16_for_imagenet, to_cdhw
 
 
 def _four_digit_key(p: Union[str, Path]) -> Union[int, str]:
@@ -20,34 +20,6 @@ def _four_digit_key(p: Union[str, Path]) -> Union[int, str]:
     head = name[:4]
     return int(head) if head.isdigit() else name
 
-
-def _to_cdhw(arr: np.ndarray, make_3ch: bool = True) -> np.ndarray:
-    """Convert array to (C,D,H,W)."""
-    a = np.asarray(arr)
-    if a.ndim == 2:                   # (H,W) -> (C=1 or 3, D=1, H, W)
-        if make_3ch:
-            a = np.stack([a, a, a], axis=0)   # (3,H,W)
-        else:
-            a = a[None, ...]                  # (1,H,W)
-        a = a[:, None, ...]                   # (C,1,H,W)
-        return a.astype(np.float32)
-
-    if a.ndim == 3:
-        if a.shape[-1] == 3:           # (H,W,3) -> (3,1,H,W)
-            a = np.transpose(a, (2, 0, 1))
-            a = a[:, None, ...]
-            return a.astype(np.float32)
-        else:                          # (D,H,W) -> (C=1 or 3, D,H,W)
-            if make_3ch:
-                a = np.stack([a, a, a], axis=0)
-            else:
-                a = a[None, ...]
-            return a.astype(np.float32)
-
-    if a.ndim == 4:                    # assume already (C,D,H,W)
-        return a.astype(np.float32)
-
-    raise ValueError(f"Unsupported image shape {a.shape}.")
 
 
 class SegDataset(Dataset):
@@ -60,7 +32,7 @@ class SegDataset(Dataset):
         valid_data: bool = False,
         valid_suffix: str = "_valid",
         make_3ch: bool = True,
-        robust_percentiles: Tuple[float, float] = (1.0, 99.9),
+        robust_percentiles: Tuple[float, float] = (0.0, 99.9),
         log_transform: bool = False,
         gamma: Optional[float] = None,
         shift_labels_to_zero: bool = True,
@@ -143,7 +115,7 @@ class SegDataset(Dataset):
             )
         else:
             proc = raw.astype(np.float32)
-        return _to_cdhw(proc, make_3ch=self.make_3ch)  # (C,D,H,W)
+        return to_cdhw(proc, make_3ch=self.make_3ch)  # (C,D,H,W)
 
     def _read_mask(self, p: Path) -> np.ndarray:
         m = tif.imread(str(p))
