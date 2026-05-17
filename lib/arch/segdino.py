@@ -178,6 +178,7 @@ class DPT(nn.Module):
         seg_head_layers = [2,5,8,11],
         feat_up_method: str = "bilinear",
         smooth_params=(16,4,1),
+        feature_up_scale_factor: int = 16,
     ):
         super(DPT, self).__init__()
         
@@ -191,6 +192,8 @@ class DPT(nn.Module):
         self.feature_map = None
         self.feat_up_method = feat_up_method
         self.smooth_params = smooth_params
+        self.feature_up_scale_factor = feature_up_scale_factor
+        self.feature_only = False
         
         if self.feat_up_method == "bilateral":
             print(f" upsample feature map using bilateral upsample with kernel_size={self.smooth_params[0]}, spatial_sigma={self.smooth_params[1]}, range_sigma={self.smooth_params[2]}")
@@ -225,6 +228,14 @@ class DPT(nn.Module):
     def lock_backbone(self):
         for p in self.backbone.parameters():
             p.requires_grad = False
+
+    def set_feature_up_scale_factor(self, up_scale_factor: int):
+        if up_scale_factor < 1:
+            raise ValueError("up_scale_factor must be >= 1")
+        self.feature_up_scale_factor = up_scale_factor
+
+    def set_feature_only(self, enabled: bool = True):
+        self.feature_only = enabled
     
     
     def forward(self, x):
@@ -235,7 +246,15 @@ class DPT(nn.Module):
         )
         #extract the feature for visualization in eval mode
         if not self.training:
-            self.feature_map = self.compute_feature_map(features, patch_h, patch_w)
+            self.feature_map = self.compute_feature_map(
+                features,
+                patch_h,
+                patch_w,
+                up_scale_factor=self.feature_up_scale_factor,
+            )
+
+        if self.feature_only:
+            return None
 
         out = self.head(features, patch_h, patch_w)
          
@@ -262,9 +281,12 @@ class DPT(nn.Module):
             out = F.interpolate(features, (features.shape[-2]*scale_factor, features.shape[-1]*scale_factor), mode='bilinear', align_corners=True)
         return out
 
-    def compute_feature_map(self,features,patch_h, patch_w):
-        "concated feature from 4 layer and upsample to patch_h, patch_w"
-        "features: B,C,N  or B,C,N"
+    def compute_feature_map(self, features, patch_h, patch_w, up_scale_factor: int = 16):
+        """Concatenate layer features and optionally upsample in the XY plane.
+
+        With ``up_scale_factor=1`` the returned feature map stays on the DINO
+        token grid, i.e. 1/16 of the input XY resolution.
+        """
 
         out = []
         for i, x in enumerate(features):
@@ -279,14 +301,16 @@ class DPT(nn.Module):
         #TODO: maybe need a suitable blur method at feature map to blur out feature variation across cell, 
         # but preserve the difference at region boundary
 
-        up_fused = self.upsample_feature_map(fused,scale_factor=16)
-        
+        if up_scale_factor == 1:
+            feat = fused
+        else:
+            feat = self.upsample_feature_map(fused, scale_factor=up_scale_factor)
 
-        up_fused = up_fused.cpu().numpy() # (B,C,H,W)
-        up_fused = np.moveaxis(up_fused,1,-1) #(B,H,W,C)
-        # remove trivial B dim
-        up_fused = np.squeeze(up_fused)
-        return up_fused
+        feat = feat.cpu().numpy() # (B,C,H,W)
+        feat = np.moveaxis(feat, 1, -1) #(B,H,W,C)
+        if feat.shape[0] == 1:
+            feat = feat[0]
+        return feat
     
 
     def compute_feature_map_pca(
@@ -485,4 +509,3 @@ class LinearTokenSeg(nn.Module):
             logits, (patch_h * self.patch_size, patch_w * self.patch_size), mode='bilinear', align_corners=True
         )
         return logits
-

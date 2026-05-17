@@ -167,7 +167,14 @@ def build_cnn_seg(dims: int, n_classes: int, model_dir = None,linear_prob: bool 
 
 
 
-def build_dpt(dims: int, n_classes: int, model_dir: Optional[str] = None, linear_prob: bool = False, smooth_params=(16,4,1)) -> Modelsegmodel:
+def build_dpt(
+    dims: int,
+    n_classes: int,
+    model_dir: Optional[str] = None,
+    linear_prob: bool = False,
+    smooth_params=(16,4,1),
+    feature_up_scale_factor: int = 16,
+) -> Modelsegmodel:
     """Build DPT with DINOv3-like backbone + DPTHead.
 
     Notes:
@@ -185,7 +192,12 @@ def build_dpt(dims: int, n_classes: int, model_dir: Optional[str] = None, linear
     if linear_prob:
         seg_model = LinearTokenSeg(backbone, nclass=n_classes)
     else:
-        seg_model = DPT(nclass=n_classes,backbone=backbone,smooth_params= smooth_params)
+        seg_model = DPT(
+            nclass=n_classes,
+            backbone=backbone,
+            smooth_params=smooth_params,
+            feature_up_scale_factor=feature_up_scale_factor,
+        )
     
     seg_model.train()
     seg_model.lock_backbone()
@@ -358,5 +370,4 @@ def build_model(arch: str, linear_prob: bool, dims: int, n_classes: int, model_d
         raise ValueError(f"Unknown architecture: {arch}")
 
     return model 
-
 
